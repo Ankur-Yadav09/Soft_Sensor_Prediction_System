@@ -1,0 +1,138 @@
+
+❯ explain me the complete codebase?                                             
+
+● Let me explore the project structure first.
+
+● Explore(Explore codebase structure)
+  ⎿  Done (14 tool uses · 54.0k tokens · 1m 40s)
+  (ctrl+o to expand)
+
+● Here's a complete breakdown of the Soft Sensor Prediction System:
+
+  ---
+  Architecture Overview
+
+  This is a single-file Streamlit web app (app.py, ~2200 lines) for industrial
+  soft sensor prediction using a Denoising Autoencoder (DAE) neural network.
+
+  ---
+  Tech Stack
+
+  ┌───────────────┬─────────────────────────────────────────┐
+  │     Layer     │               Technology                │
+  ├───────────────┼─────────────────────────────────────────┤
+  │ UI            │ Streamlit (8-page dashboard)            │
+  ├───────────────┼─────────────────────────────────────────┤
+  │ Deep Learning │ PyTorch                                 │
+  ├───────────────┼─────────────────────────────────────────┤
+  │ ML Utilities  │ scikit-learn (scaling, metrics, splits) │
+  ├───────────────┼─────────────────────────────────────────┤
+  │ Data          │ pandas, numpy, openpyxl                 │
+  ├───────────────┼─────────────────────────────────────────┤
+  │ Plotting      │ Plotly, matplotlib                      │
+  ├───────────────┼─────────────────────────────────────────┤
+  │ Persistence   │ SQLite (datasets), pickle/.pth (models) │
+  └───────────────┴─────────────────────────────────────────┘
+
+  ---
+  Neural Network: IndustrialDAE
+
+  A multi-task Denoising Autoencoder with 3 components:
+
+  Corrupted X (masked) ──→ Encoder ──→ Latent State (bottleneck)
+                                            │
+                                ┌───────────┴───────────┐
+                                ↓                       ↓
+                             Decoder                Predictor
+                         (Reconstruct X)          (Predict Y/KPIs)
+                         MSE Loss                 Huber Loss
+
+  - Encoder: input → 128 → 64 → latent_dim (BatchNorm + ReLU + Dropout)
+  - Decoder: Reconstructs all input sensor features (denoising)
+  - Predictor: Directly predicts KPI targets from latent state
+  - Combined loss: recon_loss + weight × pred_loss
+
+  The key idea: by learning to reconstruct corrupted/masked sensor data, the
+  model learns a robust latent representation that generalizes better to KPI
+  prediction.
+
+  ---
+  8-Page Dashboard
+
+  ┌───────────────┬─────────────────────────────────────────────────────────┐
+  │     Page      │                         Purpose                         │
+  ├───────────────┼─────────────────────────────────────────────────────────┤
+  │ Overview      │ System status, current model R²/MAE per KPI, model      │
+  │               │ inventory                                               │
+  ├───────────────┼─────────────────────────────────────────────────────────┤
+  │ Upload Data   │ Load Excel files or retrieve from SQLite database       │
+  ├───────────────┼─────────────────────────────────────────────────────────┤
+  │ Preprocess    │ Select X/Y variables, impute missing values, cap        │
+  │               │ outliers, train/test split, StandardScaler              │
+  ├───────────────┼─────────────────────────────────────────────────────────┤
+  │ Train Model   │ Configure hyperparameters (epochs, LR, masking ratio,   │
+  │               │ latent dim), auto-train mode (stops when R² > 0.85)     │
+  ├───────────────┼─────────────────────────────────────────────────────────┤
+  │ Predict &     │ RMSE, MAE, R², MAPE metrics; actual vs predicted plots; │
+  │ Evaluate      │  residual histograms; CSV export                        │
+  ├───────────────┼─────────────────────────────────────────────────────────┤
+  │ What-If       │ Sensitivity analysis — sweep one or more features       │
+  │ Simulator     │ across a range, observe KPI response                    │
+  ├───────────────┼─────────────────────────────────────────────────────────┤
+  │ History       │ List all training runs; reload any previous model       │
+  ├───────────────┼─────────────────────────────────────────────────────────┤
+  │ Comparison    │ Bar chart comparing RMSE across all runs                │
+  └───────────────┴─────────────────────────────────────────────────────────┘
+
+  ---
+  Full Data Pipeline
+
+  Excel Upload
+      ↓
+  SQLite (dataset versioning)
+      ↓
+  Preprocessing (imputation → outlier capping → feature selection →
+  StandardScaler)
+      ↓
+  Train/Test Split (80/20)
+      ↓
+  Training Loop (masked inputs → DAE → dual loss → Adam optimizer)
+      ↓
+  Auto-save: model.pth + scaler_x.pkl + scaler_y.pkl + columns.pkl +
+  metadata.pkl
+      ↓
+  Evaluation (test set metrics + visualizations)
+      ↓
+  What-If Analysis (feature sweep → KPI sensitivity)
+
+  ---
+  Persistence Layer
+
+  - dashboard.db — SQLite database storing uploaded datasets as Parquet blobs
+  - saved_models/<run_id>/ — Each training run saves:
+    - model.pth — PyTorch weights
+    - scaler_x.pkl / scaler_y.pkl — fitted StandardScalers
+    - columns.pkl — feature name mappings
+    - metadata.pkl — hyperparams, timestamps, metrics
+
+  ---
+  Sample Data
+
+  Data_DAE.xlsx — an industrial sensor dataset with ~41 input sensor features
+  (X) and ~5 target KPI features (Y). Two trained model runs already exist in
+  saved_models/.
+
+  ---
+  Key ML Concepts
+
+  1. Denoising Autoencoder: Random feature masking during training forces the
+  model to learn robust inter-sensor correlations
+  2. Multi-task learning: Joint reconstruction + KPI prediction from the same
+  latent space
+  3. Masking ratio: What fraction of input features are zeroed out per sample
+  during training (default 10%)
+  4. Huber loss for prediction: robust to outliers in industrial KPI data
+  5. Auto-train mode: Automatically stops training when R² > 0.85 threshold is
+  met
+
+✻ Baked for 1m 28s
