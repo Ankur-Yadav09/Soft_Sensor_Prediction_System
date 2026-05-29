@@ -29,6 +29,14 @@ def _read_excel(file_bytes: bytes):
     return pd.read_excel(io.BytesIO(file_bytes))
 
 
+@st.cache_data
+def _read_csv(file_bytes: bytes):
+    """Cache the CSV parsing step to avoid re-reading on every rerun."""
+    import io
+    import pandas as pd
+    return pd.read_csv(io.BytesIO(file_bytes))
+
+
 def render() -> None:
     st.title("Upload Data")
 
@@ -39,11 +47,14 @@ def render() -> None:
     # ------------------------------------------------------------------ #
     with col1:
         st.subheader("Upload New File")
-        uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx", "xls"])
+        uploaded_file = st.file_uploader("Upload Excel or CSV file", type=["xlsx", "xls", "csv"])
 
         if uploaded_file is not None:
             file_bytes = uploaded_file.read()
-            df = _read_excel(file_bytes)
+            if uploaded_file.name.lower().endswith(".csv"):
+                df = _read_csv(file_bytes)
+            else:
+                df = _read_excel(file_bytes)
             save_dataset_to_db(uploaded_file.name, df)
             st.session_state.df = df
             st.session_state.data_history[uploaded_file.name] = df
