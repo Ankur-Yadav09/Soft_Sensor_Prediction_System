@@ -8,3 +8,6 @@ matplotlib
 openpyxl
 plotly
 pyarrow
+xgboost
+lightgbm
+shap
