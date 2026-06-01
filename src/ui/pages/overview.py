@@ -15,7 +15,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import streamlit as st
-import torch
 
 from src.data.database import list_datasets_from_db
 from src.evaluation.metrics import compute_metrics, grade_r2
@@ -58,11 +57,9 @@ def render() -> None:
         y_test   = st.session_state.y_test_raw
         y_cols   = st.session_state.y_cols
 
-        X_test_t = torch.tensor(st.session_state.X_test, dtype=torch.float32)
-        model.eval()
-        with torch.no_grad():
-            _, preds_scaled = model(X_test_t)
-            preds = scaler_y.inverse_transform(preds_scaled.numpy())
+        preds = scaler_y.inverse_transform(
+            model.predict_scaled(st.session_state.X_test)
+        )
 
         metrics_df = compute_metrics(y_test, preds, y_cols)
         render_kpi_cards(metrics_df, y_cols)

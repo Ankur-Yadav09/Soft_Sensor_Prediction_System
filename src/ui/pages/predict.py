@@ -16,7 +16,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import streamlit as st
-import torch
 
 from src.evaluation.metrics import compute_metrics
 from src.ui.components import (
@@ -45,11 +44,9 @@ def render() -> None:
     y_test   = st.session_state.y_test_raw
     y_cols   = st.session_state.y_cols
 
-    X_test_t = torch.tensor(st.session_state.X_test, dtype=torch.float32)
-    model.eval()
-    with torch.no_grad():
-        _, val_pred = model(X_test_t)
-        preds_test = scaler_y.inverse_transform(val_pred.numpy())
+    preds_test = scaler_y.inverse_transform(
+        model.predict_scaled(st.session_state.X_test)
+    )
 
     # ------------------------------------------------------------------ #
     # Metrics table

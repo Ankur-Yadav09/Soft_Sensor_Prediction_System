@@ -21,7 +21,6 @@ from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
-import torch
 
 from config.settings import MAX_SWEEP_POINTS, TREND_EPSILON
 
@@ -87,13 +86,10 @@ def _predict_sweep(
     scaler_x,
     scaler_y,
 ) -> np.ndarray:
-    """Scale, run inference, and inverse-transform predictions."""
+    """Scale, run inference via the wrapper API, and inverse-transform predictions."""
     input_scaled = scaler_x.transform(sim_df[x_cols])
-    input_t = torch.tensor(input_scaled, dtype=torch.float32)
-    model.eval()
-    with torch.no_grad():
-        _, pred_scaled = model(input_t)
-    return scaler_y.inverse_transform(pred_scaled.numpy())
+    pred_scaled  = model.predict_scaled(input_scaled)
+    return scaler_y.inverse_transform(pred_scaled)
 
 
 # ---------------------------------------------------------------------------

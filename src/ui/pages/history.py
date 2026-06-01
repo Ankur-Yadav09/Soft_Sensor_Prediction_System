@@ -20,8 +20,15 @@ def render() -> None:
         return
 
     # Drop the raw model object before displaying (not serialisable)
-    history_df = pd.DataFrame(st.session_state.history).drop(columns=["Model"])
-    st.dataframe(history_df)
+    history_df = pd.DataFrame(st.session_state.history).drop(
+        columns=["Model"], errors="ignore"
+    )
+    # Show Model Type first if it exists
+    cols = ["Run ID", "Model Type"] + [
+        c for c in history_df.columns if c not in ("Run ID", "Model Type")
+    ]
+    history_df = history_df[[c for c in cols if c in history_df.columns]]
+    st.dataframe(history_df, use_container_width=True)
 
     # ------------------------------------------------------------------ #
     # Reload a past run's model
