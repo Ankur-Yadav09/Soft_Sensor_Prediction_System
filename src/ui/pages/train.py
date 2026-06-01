@@ -24,6 +24,7 @@ import torch
 from config.settings import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_DROPOUT_RATE,
+    DEFAULT_EARLY_STOP_PATIENCE,
     DEFAULT_EPOCHS,
     DEFAULT_LATENT_DIM,
     DEFAULT_LR,
@@ -131,6 +132,12 @@ def render() -> None:
             "Batch Size", [16, 32, 64, 128, 256],
             index=[16, 32, 64, 128, 256].index(DEFAULT_BATCH_SIZE),
         )
+        patience = st.slider(
+            "Early Stop Patience (epochs)", 0, 100,
+            DEFAULT_EARLY_STOP_PATIENCE, step=5,
+            help="Stop if validation loss doesn't improve for this many epochs "
+                 "and restore the best checkpoint. Set to 0 to disable.",
+        )
 
     # ------------------------------------------------------------------ #
     # Train
@@ -161,12 +168,19 @@ def render() -> None:
             weight_to_pred = weight_to_pred,
             batch_size     = batch_size,
             auto_train     = auto_train,
+            patience       = patience,
             progress_callback = _progress,
             status_callback   = _status,
         )
 
-        if not auto_train:
+        if not auto_train and not loss_history.get("early_stopped"):
             status_text.text("Training Complete!")
+
+        if loss_history.get("early_stopped"):
+            st.info(
+                f"Training stopped early at epoch **{loss_history['actual_epochs']}** "
+                f"(patience = {patience}). Best-checkpoint weights were restored."
+            )
 
         # ---- Store trained model in session state ----
         st.session_state.model         = trained_model
@@ -187,6 +201,8 @@ def render() -> None:
             st.session_state.y_test_raw, preds_test, st.session_state.y_cols
         )
         avg_rmse = float(metrics_df["RMSE"].mean())
+        avg_r2   = float(metrics_df["R2 Score"].mean())
+        avg_mae  = float(metrics_df["MAE"].mean())
 
         # ---- Append to training history ----
         run_id = len(st.session_state.history) + 1
@@ -197,6 +213,8 @@ def render() -> None:
                 "Latent Dim":    latent_dim,
                 "Epochs":        loss_history["actual_epochs"],
                 "Avg Test RMSE": avg_rmse,
+                "Avg Test R2":   avg_r2,
+                "Avg Test MAE":  avg_mae,
                 "Model":         trained_model,
             }
         )

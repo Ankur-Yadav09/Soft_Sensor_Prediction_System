@@ -51,6 +51,10 @@ DEFAULT_BATCH_SIZE: int = 128
 AUTO_TRAIN_MAX_EPOCHS: int = 2000
 AUTO_TRAIN_TARGET_R2: float = 0.85
 
+# Early stopping & LR scheduling
+DEFAULT_EARLY_STOP_PATIENCE: int = 20   # epochs without val improvement before stopping
+DEFAULT_LR_PATIENCE: int = 10           # epochs without improvement before LR is halved
+
 # ---------------------------------------------------------------------------
 # What-If simulator
 # ---------------------------------------------------------------------------
