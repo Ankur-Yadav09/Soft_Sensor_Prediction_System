@@ -104,14 +104,19 @@ def load_dataset_from_db(name: str) -> Optional[pd.DataFrame]:
     """
     Retrieve a DataFrame by name.
 
-    Returns ``None`` if the name is not found.
+    Returns ``None`` if the name is not found or if the stored Parquet blob is
+    incompatible with the current PyArrow version (e.g. saved by an older
+    version).  Callers should surface the None case to the user.
     """
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
             "SELECT data FROM datasets WHERE name = ?", (name,)
         ).fetchone()
     if row:
-        return pd.read_parquet(io.BytesIO(row[0]))
+        try:
+            return pd.read_parquet(io.BytesIO(row[0]))
+        except Exception:
+            return None
     return None
 
 

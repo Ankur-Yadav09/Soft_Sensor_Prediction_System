@@ -83,7 +83,11 @@ def render() -> None:
                         f"Data switched to **{history_file}** successfully!"
                     )
                 else:
-                    st.error("Failed to load dataset from database.")
+                    st.error(
+                        f"Could not load **{history_file}** — the stored data is "
+                        "incompatible with the current PyArrow version. "
+                        "Please delete this entry below and re-upload the file."
+                    )
         else:
             st.info(
                 "No datasets in database yet. Upload a file to get started."

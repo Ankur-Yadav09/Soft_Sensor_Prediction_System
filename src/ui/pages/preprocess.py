@@ -1225,6 +1225,12 @@ def render() -> None:
                     st.session_state.data_history[history_file_prep] = loaded_df
                     st.success(f"Dataset switched to {history_file_prep}")
                     st.rerun()
+                else:
+                    st.error(
+                        f"Could not load **{history_file_prep}** — the stored data is "
+                        "incompatible with the current PyArrow version. "
+                        "Go to the Upload Data page, delete this entry, and re-upload the file."
+                    )
 
     if st.session_state.df is None:
         st.warning("Please upload data first in the 'Upload Data' tab.")
