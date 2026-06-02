@@ -182,6 +182,8 @@ def apply_custom_filters(
 def split_and_scale(
     data_x: pd.DataFrame,
     data_y: pd.DataFrame,
+    test_size: float | None = None,
+    stratify_bins: int = 0,
 ) -> Tuple[
     np.ndarray,     # X_train  (scaled)
     np.ndarray,     # X_test   (scaled)
@@ -194,25 +196,39 @@ def split_and_scale(
     """
     Split into train / test partitions and apply StandardScaler.
 
+    Parameters
+    ----------
+    test_size     : fraction for test set; defaults to ``TEST_SIZE`` in settings
+    stratify_bins : >0 → stratified split using quantile-binning of the first
+                    Y column into ``stratify_bins`` equal-frequency bins.
+                    0 → plain random split (default).
+
     The scaler is fitted on the training partition only; the test partition
     is transformed with the already-fitted scaler to prevent data leakage.
-
-    Returns
-    -------
-    X_train_s, X_test_s, y_train_s, y_test_s,
-    y_test_raw (unscaled DataFrame),
-    scaler_x, scaler_y
     """
+    effective_test_size = test_size if test_size is not None else TEST_SIZE
+
+    stratify_labels = None
+    if stratify_bins > 0:
+        first_y = data_y.iloc[:, 0]
+        try:
+            stratify_labels = pd.qcut(first_y, q=stratify_bins, labels=False, duplicates="drop")
+        except Exception:
+            stratify_labels = None  # fall back to random if binning fails
+
     X_train, X_test, y_train, y_test = train_test_split(
-        data_x, data_y, test_size=TEST_SIZE, random_state=RANDOM_STATE
+        data_x, data_y,
+        test_size=effective_test_size,
+        random_state=RANDOM_STATE,
+        stratify=stratify_labels,
     )
 
     scaler_x = StandardScaler()
     scaler_y = StandardScaler()
 
     X_train_s = scaler_x.fit_transform(X_train)
-    X_test_s = scaler_x.transform(X_test)
+    X_test_s  = scaler_x.transform(X_test)
     y_train_s = scaler_y.fit_transform(y_train)
-    y_test_s = scaler_y.transform(y_test)
+    y_test_s  = scaler_y.transform(y_test)
 
     return X_train_s, X_test_s, y_train_s, y_test_s, y_test, scaler_x, scaler_y

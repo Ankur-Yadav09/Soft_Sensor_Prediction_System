@@ -77,7 +77,8 @@ SIDEBAR_STATE: str = "expanded"
 NAVIGATION_OPTIONS: list = [
     "Overview",
     "Upload Data",
-    "Preprocess",
+    "Preprocessing",
+    "Feature Selection",
     "Train Model",
     "Predict",
     "What-If",
@@ -88,6 +89,7 @@ NAVIGATION_ICONS: list = [
     "graph-up",
     "upload",
     "gear",
+    "funnel",
     "diagram-3",
     "graph-up-arrow",
     "magic",
