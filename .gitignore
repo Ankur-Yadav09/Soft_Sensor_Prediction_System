@@ -217,4 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-.dashboard.db
+saved_models/
+soft_sensor/
+dashboard.db
+ 
