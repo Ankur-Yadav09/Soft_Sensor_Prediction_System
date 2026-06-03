@@ -1,19 +1,54 @@
 
-❯ explain me the complete codebase?                                             
-
-● Let me explore the project structure first.
-
-● Explore(Explore codebase structure)
-  ⎿  Done (14 tool uses · 54.0k tokens · 1m 40s)
-  (ctrl+o to expand)
+❯ explain me the complete codebase?
 
 ● Here's a complete breakdown of the Soft Sensor Prediction System:
 
   ---
   Architecture Overview
 
-  This is a single-file Streamlit web app (app.py, ~2200 lines) for industrial
-  soft sensor prediction using a Denoising Autoencoder (DAE) neural network.
+  This is a modular Streamlit web app (26 Python modules, ~5,756 lines) for
+  industrial soft sensor prediction. The primary model is a Denoising Autoencoder
+  (DAE) built in PyTorch, with additional support for Random Forest, XGBoost,
+  LightGBM, and LSTM. The codebase is split into a pure-Python business-logic
+  layer (src/) and a thin Streamlit UI layer (src/ui/).
+
+  ---
+  Directory Structure
+
+  Soft_Sensor_Prediction_System/
+  ├── app.py                      # Streamlit entry point — thin dispatcher only
+  ├── requirements.txt
+  ├── dashboard.db                # SQLite database (dataset versioning)
+  ├── config/
+  │   └── settings.py             # ALL constants & defaults live here
+  ├── src/
+  │   ├── data/
+  │   │   ├── database.py         # SQLite CRUD for dataset versioning
+  │   │   └── preprocessing.py    # Cleaning pipeline (impute, outliers, scale)
+  │   ├── feature_selection/
+  │   │   ├── auto_selector.py    # 12-method consensus engine (main)
+  │   │   └── selector.py         # Legacy 3-method selector
+  │   ├── models/
+  │   │   ├── architecture.py     # IndustrialDAE (PyTorch)
+  │   │   └── wrappers.py         # Unified predict_scaled() API for all models
+  │   ├── training/
+  │   │   ├── trainer.py          # DAE training loop (no Streamlit imports)
+  │   │   ├── train_lstm.py       # LSTM training harness
+  │   │   └── train_sklearn.py    # RF / XGBoost / LightGBM training
+  │   ├── evaluation/
+  │   │   └── metrics.py          # RMSE, MAE, R², MAPE + grade_r2()
+  │   ├── persistence/
+  │   │   └── model_store.py      # Save / load / list all model types
+  │   ├── simulation/
+  │   │   └── what_if.py          # Feature sweep sensitivity engine
+  │   └── ui/
+  │       ├── layout.py           # Page config + sidebar navigation
+  │       ├── session.py          # Streamlit session state (13 keys)
+  │       ├── components.py       # Shared widgets (KPI cards, loss curves)
+  │       └── pages/              # One module per navigation page (9 total)
+  ├── saved_models/               # Timestamped model run directories
+  └── data/
+      └── Data_DAE.xlsx           # Example industrial sensor dataset
 
   ---
   Tech Stack
@@ -21,17 +56,17 @@
   ┌───────────────┬─────────────────────────────────────────┐
   │     Layer     │               Technology                │
   ├───────────────┼─────────────────────────────────────────┤
-  │ UI            │ Streamlit (8-page dashboard)            │
+  │ UI            │ Streamlit (9-page dashboard)            │
   ├───────────────┼─────────────────────────────────────────┤
-  │ Deep Learning │ PyTorch                                 │
+  │ Deep Learning │ PyTorch (DAE + LSTM)                    │
   ├───────────────┼─────────────────────────────────────────┤
-  │ ML Utilities  │ scikit-learn (scaling, metrics, splits) │
+  │ ML Models     │ scikit-learn, XGBoost, LightGBM         │
   ├───────────────┼─────────────────────────────────────────┤
   │ Data          │ pandas, numpy, openpyxl                 │
   ├───────────────┼─────────────────────────────────────────┤
   │ Plotting      │ Plotly, matplotlib                      │
   ├───────────────┼─────────────────────────────────────────┤
-  │ Persistence   │ SQLite (datasets), pickle/.pth (models) │
+  │ Persistence   │ SQLite + Parquet (datasets), pickle/.pth│
   └───────────────┴─────────────────────────────────────────┘
 
   ---
@@ -50,89 +85,164 @@
   - Encoder: input → 128 → 64 → latent_dim (BatchNorm + ReLU + Dropout)
   - Decoder: Reconstructs all input sensor features (denoising)
   - Predictor: Directly predicts KPI targets from latent state
-  - Combined loss: recon_loss + weight × pred_loss
+  - Combined loss: recon_loss + weight_to_pred × pred_loss
 
   The key idea: by learning to reconstruct corrupted/masked sensor data, the
   model learns a robust latent representation that generalizes better to KPI
   prediction.
 
   ---
-  8-Page Dashboard
+  Model Wrappers (src/models/wrappers.py)
 
-  ┌───────────────┬─────────────────────────────────────────────────────────┐
-  │     Page      │                         Purpose                         │
-  ├───────────────┼─────────────────────────────────────────────────────────┤
-  │ Overview      │ System status, current model R²/MAE per KPI, model      │
-  │               │ inventory                                               │
-  ├───────────────┼─────────────────────────────────────────────────────────┤
-  │ Upload Data   │ Load Excel files or retrieve from SQLite database       │
-  ├───────────────┼─────────────────────────────────────────────────────────┤
-  │ Preprocess    │ Select X/Y variables, impute missing values, cap        │
-  │               │ outliers, train/test split, StandardScaler              │
-  ├───────────────┼─────────────────────────────────────────────────────────┤
-  │ Train Model   │ Configure hyperparameters (epochs, LR, masking ratio,   │
-  │               │ latent dim), auto-train mode (stops when R² > 0.85)     │
-  ├───────────────┼─────────────────────────────────────────────────────────┤
-  │ Predict &     │ RMSE, MAE, R², MAPE metrics; actual vs predicted plots; │
-  │ Evaluate      │  residual histograms; CSV export                        │
-  ├───────────────┼─────────────────────────────────────────────────────────┤
-  │ What-If       │ Sensitivity analysis — sweep one or more features       │
-  │ Simulator     │ across a range, observe KPI response                    │
-  ├───────────────┼─────────────────────────────────────────────────────────┤
-  │ History       │ List all training runs; reload any previous model       │
-  ├───────────────┼─────────────────────────────────────────────────────────┤
-  │ Comparison    │ Bar chart comparing RMSE across all runs                │
-  └───────────────┴─────────────────────────────────────────────────────────┘
+  All models — regardless of framework — expose the same interface:
+
+      wrapper.predict_scaled(X_scaled) → np.ndarray
+
+  Three wrapper classes:
+  - DAEWrapper     — PyTorch IndustrialDAE
+  - LSTMWrapper    — PyTorch LSTMPredictor (tiled-window sequences)
+  - SklearnWrapper — Random Forest, XGBoost, LightGBM (MultiOutputRegressor)
+
+  Pages and evaluation code always call wrappers, never raw model internals.
+
+  ---
+  12-Method Auto Feature Selection (src/feature_selection/auto_selector.py)
+
+  The consensus engine runs 12 independent selection methods and aggregates
+  their votes into a single confidence score per feature:
+
+    Confidence = 60% × selection_frequency + 40% × avg_normalized_score
+
+  Methods by category:
+  ┌────────────────────────┬──────────────────────────────────────────────┐
+  │       Category         │                   Methods                   │
+  ├────────────────────────┼──────────────────────────────────────────────┤
+  │ Supervised Stats (3)   │ Target Correlation, F-Test, Mutual Info      │
+  ├────────────────────────┼──────────────────────────────────────────────┤
+  │ Tree Importance (3)    │ Random Forest, XGBoost, LightGBM             │
+  ├────────────────────────┼──────────────────────────────────────────────┤
+  │ Regularization (2)     │ Lasso, Elastic Net (multi-task variants)     │
+  ├────────────────────────┼──────────────────────────────────────────────┤
+  │ Wrapper Methods (3)    │ RFE, Sequential Forward, Sequential Backward │
+  ├────────────────────────┼──────────────────────────────────────────────┤
+  │ Dim. Reduction (1)     │ PCA Loadings Analysis                        │
+  └────────────────────────┴──────────────────────────────────────────────┘
+
+  Output categories:
+  - Highly Recommended (≥70% confidence)
+  - Recommended        (≥45%)
+  - Optional           (≥20%)
+  - Remove             (<20%)
+
+  Also produces: correlation heatmaps, VIF analysis, per-feature reasoning
+  (correlation value, p-value, VIF, regularization impact).
+
+  ---
+  9-Page Dashboard
+
+  ┌──────────────────┬──────────────────────────────────────────────────────┐
+  │       Page       │                       Purpose                       │
+  ├──────────────────┼──────────────────────────────────────────────────────┤
+  │ Overview         │ System status, current model KPIs, dataset &        │
+  │                  │ model inventory                                     │
+  ├──────────────────┼──────────────────────────────────────────────────────┤
+  │ Upload Data      │ Excel/CSV upload + SQLite dataset versioning        │
+  ├──────────────────┼──────────────────────────────────────────────────────┤
+  │ Preprocess       │ Per-feature stats, imputation, outlier treatment,   │
+  │                  │ domain filters, train/test split + StandardScaler   │
+  ├──────────────────┼──────────────────────────────────────────────────────┤
+  │ Feature          │ 12-method consensus auto-selector, VIF analysis,    │
+  │ Selection        │ correlation heatmaps, per-feature reasoning         │
+  ├──────────────────┼──────────────────────────────────────────────────────┤
+  │ Train Model      │ Model type picker (DAE/RF/XGB/LGB/LSTM),            │
+  │                  │ hyperparameter widgets, auto-train mode             │
+  ├──────────────────┼──────────────────────────────────────────────────────┤
+  │ Predict &        │ RMSE, MAE, R², MAPE metrics; actual vs predicted;   │
+  │ Evaluate         │ residual plots; CSV export                          │
+  ├──────────────────┼──────────────────────────────────────────────────────┤
+  │ What-If          │ Single/multi-feature sweep; KPI trend labeling      │
+  │ Simulator        │ (Increasing / Decreasing / Constant per output)     │
+  ├──────────────────┼──────────────────────────────────────────────────────┤
+  │ History          │ All training runs, per-run metrics & hyperparams    │
+  ├──────────────────┼──────────────────────────────────────────────────────┤
+  │ Comparison       │ Cross-run metric comparison charts                  │
+  └──────────────────┴──────────────────────────────────────────────────────┘
 
   ---
   Full Data Pipeline
 
-  Excel Upload
+  Excel / CSV Upload
       ↓
-  SQLite (dataset versioning)
+  SQLite (Parquet blobs — dataset versioning, instant switching)
       ↓
-  Preprocessing (imputation → outlier capping → feature selection →
-  StandardScaler)
+  Preprocessing
+    → Type coercion
+    → Imputation (mean / median / ffill / bfill / zero)
+    → Outlier treatment (IQR capping / Winsorization / Z-score removal)
+    → Domain filters (per-tag min/max clipping)
+    → Train/Test Split (80/20) + StandardScaler
       ↓
-  Train/Test Split (80/20)
+  Auto Feature Selection (12-method consensus)
       ↓
-  Training Loop (masked inputs → DAE → dual loss → Adam optimizer)
+  Training
+    → DAE: masked inputs → dual loss (MSE + Huber) → Adam optimizer
+    → sklearn: MultiOutputRegressor (RF / XGB / LGB)
+    → LSTM: tiled-window sequences
       ↓
-  Auto-save: model.pth + scaler_x.pkl + scaler_y.pkl + columns.pkl +
-  metadata.pkl
+  Auto-save: model.pth|pkl + scaler_x.pkl + scaler_y.pkl +
+             columns.pkl + metadata.pkl
       ↓
-  Evaluation (test set metrics + visualizations)
+  Evaluation (test set: RMSE, MAE, R², MAPE per target)
       ↓
-  What-If Analysis (feature sweep → KPI sensitivity)
+  What-If Analysis (feature sweep → KPI sensitivity trends)
 
   ---
   Persistence Layer
 
-  - dashboard.db — SQLite database storing uploaded datasets as Parquet blobs
-  - saved_models/<run_id>/ — Each training run saves:
-    - model.pth — PyTorch weights
-    - scaler_x.pkl / scaler_y.pkl — fitted StandardScalers
-    - columns.pkl — feature name mappings
-    - metadata.pkl — hyperparams, timestamps, metrics
+  - dashboard.db — SQLite; datasets stored as Parquet BLOBs
+    Schema: id, name, upload_time, num_rows, num_cols, data
+
+  - saved_models/<run_name>/
+    ├── model.pth       — PyTorch weights (DAE / LSTM)
+    │   OR model.pkl    — sklearn pickle (RF / XGB / LGB)
+    ├── scaler_x.pkl    — fitted input StandardScaler
+    ├── scaler_y.pkl    — fitted output StandardScaler
+    ├── columns.pkl     — {'x_cols': [...], 'y_cols': [...]}
+    └── metadata.pkl    — name, saved_at, input_dim, output_dim, model_type
+
+  ---
+  Central Configuration (config/settings.py)
+
+  All constants are defined here — never hardcoded elsewhere:
+
+  - DB_PATH = "dashboard.db"
+  - MODEL_DIR = "saved_models"
+  - TEST_SIZE = 0.2, RANDOM_STATE = 42
+  - DEFAULT_LATENT_DIM = 15, DEFAULT_DROPOUT_RATE = 0.2
+  - DEFAULT_MASKING_RATIO = 0.10, DEFAULT_EPOCHS = 150
+  - DEFAULT_LR = 0.001, DEFAULT_WEIGHT_TO_PRED = 5.0
+  - AUTO_TRAIN_MAX_EPOCHS = 2000, AUTO_TRAIN_TARGET_R2 = 0.85
+  - DEFAULT_EARLY_STOP_PATIENCE = 20, DEFAULT_LR_PATIENCE = 10
+  - R2_EXCELLENT = 0.90, R2_GOOD = 0.75
 
   ---
   Sample Data
 
   Data_DAE.xlsx — an industrial sensor dataset with ~41 input sensor features
-  (X) and ~5 target KPI features (Y). Two trained model runs already exist in
-  saved_models/.
+  (X) and ~5 target KPI features (Y).
 
   ---
   Key ML Concepts
 
   1. Denoising Autoencoder: Random feature masking during training forces the
-  model to learn robust inter-sensor correlations
+     model to learn robust inter-sensor correlations
   2. Multi-task learning: Joint reconstruction + KPI prediction from the same
-  latent space
-  3. Masking ratio: What fraction of input features are zeroed out per sample
-  during training (default 10%)
-  4. Huber loss for prediction: robust to outliers in industrial KPI data
-  5. Auto-train mode: Automatically stops training when R² > 0.85 threshold is
-  met
-
-✻ Baked for 1m 28s
+     latent space
+  3. Masking ratio: Fraction of input features zeroed out per sample during
+     training (default 10%)
+  4. Huber loss for prediction: Robust to outliers in industrial KPI data
+  5. Auto-train mode: Stops automatically when R² > 0.85 threshold is met
+  6. Consensus feature selection: 12 independent methods vote on each feature;
+     confidence score = 60% frequency + 40% normalized score
+  7. Wrapper abstraction: All model types share predict_scaled() so pages are
+     model-agnostic
