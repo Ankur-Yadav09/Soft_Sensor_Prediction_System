@@ -39,7 +39,7 @@ PREDICTOR_HIDDEN_2: int = 16
 # ---------------------------------------------------------------------------
 # Training defaults (reflected in the Streamlit widgets as initial values)
 # ---------------------------------------------------------------------------
-DEFAULT_LATENT_DIM: int = 15
+DEFAULT_LATENT_DIM: int = 5
 DEFAULT_DROPOUT_RATE: float = 0.2
 DEFAULT_MASKING_RATIO: float = 0.10
 DEFAULT_EPOCHS: int = 150
@@ -48,8 +48,8 @@ DEFAULT_WEIGHT_TO_PRED: float = 5.0
 DEFAULT_BATCH_SIZE: int = 128
 
 # Auto-train
-AUTO_TRAIN_MAX_EPOCHS: int = 2000
-AUTO_TRAIN_TARGET_R2: float = 0.85
+AUTO_TRAIN_MAX_EPOCHS: int = 1000
+AUTO_TRAIN_TARGET_R2: float = 0.80
 
 # Early stopping & LR scheduling
 DEFAULT_EARLY_STOP_PATIENCE: int = 20   # epochs without val improvement before stopping
@@ -64,7 +64,7 @@ TREND_EPSILON: float = 1e-5
 # ---------------------------------------------------------------------------
 # Evaluation / grading thresholds
 # ---------------------------------------------------------------------------
-R2_EXCELLENT: float = 0.90
+R2_EXCELLENT: float = 0.85
 R2_GOOD: float = 0.75
 
 # ---------------------------------------------------------------------------
