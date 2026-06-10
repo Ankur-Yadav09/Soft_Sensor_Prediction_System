@@ -81,9 +81,9 @@ FS_PS_SHAP_WEIGHT:  float = 0.15
 FS_PS_MRMR_WEIGHT:  float = 0.05
 
 # Recommendation thresholds
-FS_HIGHLY_REC_MIN_FINAL:          float = 80.0
-FS_HIGHLY_REC_MIN_PRED_STRENGTH:  float = 70.0
-FS_HIGHLY_REC_MIN_QUALITY:        float = 60.0
+FS_HIGHLY_REC_MIN_FINAL:          float = 70.0
+FS_HIGHLY_REC_MIN_PRED_STRENGTH:  float = 60.0
+FS_HIGHLY_REC_MIN_QUALITY:        float = 40.0
 FS_HIGHLY_REC_MAX_VIF:            float = 10.0
 FS_RECOMMENDED_MIN_FINAL:         float = 60.0
 FS_RECOMMENDED_MIN_PRED_STRENGTH: float = 50.0
