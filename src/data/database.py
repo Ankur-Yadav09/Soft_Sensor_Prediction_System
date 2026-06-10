@@ -65,6 +65,26 @@ def init_db() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _sanitize_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
+    """Resolve mixed-type object columns so PyArrow can serialise to Parquet.
+
+    For each object column:
+    - If all non-null values are numeric, cast to float.
+    - Otherwise, cast every value to str (None preserved for nulls).
+    """
+    df = df.copy()
+    for col in df.columns:
+        if df[col].dtype != object:
+            continue
+        as_num = pd.to_numeric(df[col], errors="coerce")
+        non_null = df[col].notna()
+        if non_null.sum() == 0 or as_num[non_null].notna().all():
+            df[col] = as_num
+        else:
+            df[col] = df[col].apply(lambda x: str(x) if pd.notna(x) else None)
+    return df
+
+
 def save_dataset_to_db(name: str, df: pd.DataFrame) -> None:
     """
     Upsert a DataFrame into the database.
@@ -72,7 +92,7 @@ def save_dataset_to_db(name: str, df: pd.DataFrame) -> None:
     If a dataset with the same *name* already exists it is replaced
     (INSERT OR REPLACE semantics).
     """
-    blob = df.to_parquet()
+    blob = _sanitize_for_parquet(df).to_parquet()
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
