@@ -725,7 +725,7 @@ def render() -> None:
             with c1:
                 top_k = st.slider(
                     "Top-K features per method",
-                    min_value=3, max_value=min(25, n_feat),
+                    min_value=2, max_value=min(25, n_feat),
                     value=min(10, n_feat), key="fs_top_k",
                 )
             with c2:
