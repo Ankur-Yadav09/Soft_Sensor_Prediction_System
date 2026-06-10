@@ -47,8 +47,10 @@ from src.feature_selection.auto_selector import (
     run_auto_feature_selection,
     _MAX_FEATURES_SFS,
     _MAX_FEATURES_SFS_BK,
+    _MAX_FEATURES_NEW,
     _XGBOOST_AVAILABLE,
     _LIGHTGBM_AVAILABLE,
+    _SHAP_AVAILABLE,
     _SFS_AVAILABLE,
 )
 
@@ -65,12 +67,17 @@ _MUTED   = "#94a3b8"
 _REC_COLORS = {
     "Highly Recommended": _ACCENT,
     "Recommended":        _PRIMARY,
+    "Consider":           _WARN,
+    "Weak Feature":       _DANGER,
+    # legacy keys kept for backward compat with any cached results
     "Optional":           _WARN,
     "Remove":             _DANGER,
 }
 _REC_ICONS = {
     "Highly Recommended": "🟢",
     "Recommended":        "🔵",
+    "Consider":           "🟡",
+    "Weak Feature":       "🔴",
     "Optional":           "🟡",
     "Remove":             "🔴",
 }
@@ -143,17 +150,18 @@ def _sync_checkboxes(x_list: List[str], y_list: List[str], all_cols: List[str]) 
 
 def _plot_consensus_bar(consensus_df: pd.DataFrame) -> go.Figure:
     df = consensus_df.reset_index()
-    df = df.sort_values("ConfidenceScore", ascending=True).tail(30)
+    score_col = "FinalScore" if "FinalScore" in df.columns else "ConfidenceScore"
+    df = df.sort_values(score_col, ascending=True).tail(30)
     colors = [_REC_COLORS.get(r, "#94a3b8") for r in df["Recommendation"]]
     fig = go.Figure(go.Bar(
-        x=df["ConfidenceScore"], y=df["Feature"], orientation="h",
+        x=df[score_col], y=df["Feature"], orientation="h",
         marker_color=colors,
-        text=[f"{v:.0f}%" for v in df["ConfidenceScore"]],
+        text=[f"{v:.0f}" for v in df[score_col]],
         textposition="outside",
-        hovertemplate="<b>%{y}</b><br>Confidence: %{x:.1f}%<extra></extra>",
+        hovertemplate="<b>%{y}</b><br>Final Score: %{x:.1f}<extra></extra>",
     ))
     fig.update_layout(
-        title="Feature Confidence Scores", xaxis_title="Confidence Score (%)",
+        title="Feature Final Scores", xaxis_title="Final Score",
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         font_color="#f8fafc", height=max(400, len(df) * 24),
         margin=dict(l=10, r=60, t=40, b=20),
@@ -249,7 +257,7 @@ def _plot_method_summary(method_results: list) -> go.Figure:
 def _build_default_methods(n_feat: int) -> List[str]:
     defaults = [
         "target_correlation", "f_test", "mutual_information",
-        "rf_importance", "lasso", "elasticnet", "rfe", "pca_analysis",
+        "mrmr", "rf_importance", "lasso", "elasticnet", "rfe", "pca_analysis",
     ]
     if n_feat <= _MAX_FEATURES_SFS and _SFS_AVAILABLE:
         defaults.append("sfs_forward")
@@ -259,6 +267,10 @@ def _build_default_methods(n_feat: int) -> List[str]:
         defaults.append("xgboost_importance")
     if _LIGHTGBM_AVAILABLE:
         defaults.append("lightgbm_importance")
+    if n_feat <= _MAX_FEATURES_NEW:
+        defaults.append("permutation_importance")
+        if _SHAP_AVAILABLE:
+            defaults.append("shap_importance")
     return defaults
 
 
@@ -293,8 +305,8 @@ def _render_analysis_results(
     n_methods_ran = sum(1 for r in result.method_results if r.success)
     n_highly = sum(1 for r in cdf["Recommendation"] if r == "Highly Recommended")
     n_rec    = sum(1 for r in cdf["Recommendation"] if r == "Recommended")
-    n_opt    = sum(1 for r in cdf["Recommendation"] if r == "Optional")
-    n_rem    = sum(1 for r in cdf["Recommendation"] if r == "Remove")
+    n_opt    = sum(1 for r in cdf["Recommendation"] if r in ("Consider", "Optional"))
+    n_rem    = sum(1 for r in cdf["Recommendation"] if r in ("Weak Feature", "Remove"))
 
     st.markdown(
         f"<p style='color:{_MUTED};font-size:0.88rem'>"
@@ -306,8 +318,8 @@ def _render_analysis_results(
     kc1.metric("Methods Run",          n_methods_ran)
     kc2.metric("🟢 Highly Recommended", n_highly)
     kc3.metric("🔵 Recommended",        n_rec)
-    kc4.metric("🟡 Optional",           n_opt)
-    kc5.metric("🔴 Remove",             n_rem)
+    kc4.metric("🟡 Consider",           n_opt)
+    kc5.metric("🔴 Weak Feature",       n_rem)
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 Overview",
@@ -356,19 +368,24 @@ def _render_analysis_results(
             st.success("No highly correlated feature pairs detected at this threshold.")
 
     with tab2:
-        st.markdown("#### Feature Ranking by Consensus Score")
-        st.caption("Confidence Score = 60% × Selection Frequency + 40% × Avg Normalized Score.")
+        st.markdown("#### Feature Ranking by Final Score")
+        st.caption(
+            "**Final Score** = 25% × Selection Frequency + 40% × Predictive Strength "
+            "+ 20% × Feature Quality + 15% × Stability Score"
+        )
 
         def _style_rec(val: str) -> str:
             color = _REC_COLORS.get(val, "")
             return f"color: {color}; font-weight: bold" if color else ""
 
-        display_cols = [
+        base_cols = [
             "Feature", "SelectionCount", "TotalMethods", "SelectionFreq",
-            "ConfidenceScore", "CorrWithTarget", "VIF", "PValue",
+            "PredictiveStrength", "FeatureQuality", "StabilityScore", "FinalScore",
+            "CorrWithTarget", "VIF", "PValue",
             "LassoSelected", "ElasticNetSelected", "Recommendation",
         ]
-        disp_df = cdf.reset_index()[display_cols] if "Rank" not in cdf.columns else cdf[display_cols]
+        available_cols = [c for c in base_cols if c in cdf.columns]
+        disp_df = cdf.reset_index()[available_cols] if "Rank" not in cdf.columns else cdf[available_cols]
         st.dataframe(disp_df.style.map(_style_rec, subset=["Recommendation"]), use_container_width=True, height=450)
         st.plotly_chart(_plot_consensus_bar(cdf), use_container_width=True)
 
@@ -386,28 +403,41 @@ def _render_analysis_results(
 
     with tab4:
         st.markdown("#### Feature Recommendation Cards")
-        for rec_cat in ["Highly Recommended", "Recommended", "Optional", "Remove"]:
-            feats_in_cat = cdf[cdf["Recommendation"] == rec_cat]
+        for rec_cat in ["Highly Recommended", "Recommended", "Consider", "Weak Feature"]:
+            # also pick up legacy category names from cached results
+            legacy = {"Consider": "Optional", "Weak Feature": "Remove"}
+            feats_in_cat = cdf[cdf["Recommendation"].isin([rec_cat, legacy.get(rec_cat, "")])]
             if feats_in_cat.empty:
                 continue
             color = _REC_COLORS[rec_cat]
             icon  = _REC_ICONS[rec_cat]
             st.markdown(f"<h4 style='color:{color}'>{icon} {rec_cat} ({len(feats_in_cat)} feature(s))</h4>", unsafe_allow_html=True)
             for _, row in feats_in_cat.iterrows():
-                feat  = row["Feature"]
-                conf  = row["ConfidenceScore"]
-                n_sel = int(row["SelectionCount"])
-                n_tot = int(row["TotalMethods"])
-                with st.expander(f"**{feat}** — Confidence: {conf:.0f}%  ({n_sel}/{n_tot} methods)", expanded=(rec_cat == "Highly Recommended")):
+                feat       = row["Feature"]
+                final_score = row.get("FinalScore", row.get("ConfidenceScore", 0))
+                ps_val     = row.get("PredictiveStrength")
+                fq_val     = row.get("FeatureQuality")
+                stab_val   = row.get("StabilityScore")
+                n_sel      = int(row["SelectionCount"])
+                n_tot      = int(row["TotalMethods"])
+                with st.expander(f"**{feat}** — Final Score: {final_score:.0f}  ({n_sel}/{n_tot} methods)", expanded=(rec_cat == "Highly Recommended")):
                     mc1, mc2, mc3, mc4 = st.columns(4)
-                    mc1.metric("Confidence", f"{conf:.0f}%")
-                    mc2.metric("Methods",    f"{n_sel}/{n_tot}")
+                    mc1.metric("Final Score",         f"{final_score:.0f}")
+                    mc2.metric("Methods",             f"{n_sel}/{n_tot}")
                     corr_val = row.get("CorrWithTarget")
                     vif_val  = row.get("VIF")
                     if corr_val is not None:
                         mc3.metric("Avg |r| w/ Target", f"{corr_val:.3f}")
                     if vif_val is not None:
                         mc4.metric("VIF", f"{vif_val:.1f}")
+                    # Score breakdown row
+                    if ps_val is not None:
+                        sb1, sb2, sb3 = st.columns(3)
+                        sb1.metric("Predictive Strength", f"{ps_val:.1f}")
+                        if fq_val is not None:
+                            sb2.metric("Feature Quality", f"{fq_val:.1f}")
+                        if stab_val is not None:
+                            sb3.metric("Stability Score", f"{stab_val:.1f}")
                     st.markdown(result.per_feature_reasoning.get(feat, ""))
                     st.markdown("---")
 
@@ -753,6 +783,8 @@ def render() -> None:
                     st.caption(f"⚠️ {METHOD_LABELS[mid]} — install `lightgbm` to enable")
                 elif mid in ("sfs_forward", "sfs_backward") and not _SFS_AVAILABLE:
                     st.caption(f"⚠️ {METHOD_LABELS[mid]} — upgrade scikit-learn to enable")
+                elif mid == "shap_importance" and not _SHAP_AVAILABLE:
+                    st.caption(f"⚠️ {METHOD_LABELS[mid]} — install `shap` to enable")
 
             enabled_methods = _method_checkboxes(avail_methods, default_methods)
             st.markdown(
@@ -905,9 +937,9 @@ def render() -> None:
     st.markdown(
         f"**Highly Recommended + Recommended X ({len(result.recommended_features)}):** "
         f"`{', '.join(result.recommended_features) or 'None'}`  \n"
-        f"**Optional X ({len(result.optional_features)}):** "
+        f"**Consider X ({len(result.optional_features)}):** "
         f"`{', '.join(result.optional_features) or 'None'}`  \n"
-        f"**Remove ({len(result.features_to_remove)}):** "
+        f"**Weak Feature ({len(result.features_to_remove)}):** "
         f"`{', '.join(result.features_to_remove) or 'None'}`"
     )
 
