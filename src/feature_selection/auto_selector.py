@@ -22,6 +22,7 @@ run_auto_feature_selection(X_df, y_df, top_k, enabled_methods,
 """
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -57,12 +58,14 @@ from config.settings import (
     FS_PS_XGB_WEIGHT,
     FS_RECOMMENDED_MIN_FINAL,
     FS_RECOMMENDED_MIN_PRED_STRENGTH,
+    FS_RECOMMENDED_MIN_QUALITY,
     FS_CONSIDER_MIN_FINAL,
     FS_SHAP_MAX_ROWS,
     FS_STABILITY_MAX_ROWS,
     FS_STABILITY_RUNS,
     FS_STABILITY_SAMPLE_FRAC,
     FS_WEAK_MAX_PRED_STRENGTH,
+    FS_WEAK_MAX_QUALITY,
     FS_WEIGHT_FEATURE_QUALITY,
     FS_WEIGHT_PREDICTIVE_STRENGTH,
     FS_WEIGHT_SELECTION_FREQ,
@@ -895,35 +898,105 @@ def _compute_feature_quality(
     vif_df: pd.DataFrame,
     missing_pct_per_col: Dict[str, float],
 ) -> Dict[str, float]:
-    """VIF + missing value + variance sub-scores averaged → 0–100 per feature."""
-    vif_lookup: Dict[str, float] = {}
+    """
+    Feature Quality Score (0-100)
+
+    Components:
+    - VIF Score (50%)
+    - Missing Value Score (30%)
+    - Variance Score (20%)
+    """
+
+    vif_lookup = {}
     if not vif_df.empty and "VIF" in vif_df.columns:
         vif_lookup = dict(zip(vif_df["Feature"], vif_df["VIF"]))
 
     stds = X_clean.std()
 
-    result: Dict[str, float] = {}
+    result = {}
+
     for feat in features:
-        # VIF sub-score
+
+        # =========================
+        # 1. VIF SCORE (50%)
+        # =========================
         vif = vif_lookup.get(feat, np.nan)
+
         if np.isnan(vif):
-            vif_score = 70.0  # neutral when VIF not computed
-        elif vif <= _VIF_MODERATE:
+            vif_score = 70.0  # Neutral
+
+        elif vif <= 5:
             vif_score = 100.0
-        elif vif <= 50.0:
-            vif_score = max(0.0, 100.0 - (vif - _VIF_MODERATE) * (100.0 / 45.0))
+
+        elif vif <= 10:
+            vif_score = 80.0
+
+        elif vif <= 20:
+            vif_score = 50.0
+
+        elif vif <= 30:
+            vif_score = 20.0
+
         else:
             vif_score = 0.0
 
-        # Missing value sub-score
+        # =========================
+        # 2. MISSING SCORE (30%)
+        # =========================
         miss_pct = missing_pct_per_col.get(feat, 0.0)
-        miss_score = float(np.clip((1.0 - miss_pct) * 100, 0, 100))
 
-        # Variance sub-score
+        # Convert to percentage if stored as fraction
+        if miss_pct <= 1:
+            miss_pct *= 100
+
+        if miss_pct <= 1:
+            miss_score = 100.0
+
+        elif miss_pct <= 5:
+            miss_score = 90.0
+
+        elif miss_pct <= 10:
+            miss_score = 75.0
+
+        elif miss_pct <= 20:
+            miss_score = 50.0
+
+        elif miss_pct <= 30:
+            miss_score = 25.0
+
+        else:
+            miss_score = 0.0
+
+        # =========================
+        # 3. VARIANCE SCORE (20%)
+        # =========================
         std_val = float(stds.get(feat, 0.0))
-        var_score = 0.0 if std_val < 0.01 else 100.0
 
-        result[feat] = round((vif_score + miss_score + var_score) / 3.0, 2)
+        if std_val <= 0:
+            var_score = 0.0
+
+        elif std_val < 0.001:
+            var_score = 20.0
+
+        elif std_val < 0.01:
+            var_score = 50.0
+
+        elif std_val < 0.05:
+            var_score = 80.0
+
+        else:
+            var_score = 100.0
+
+        # =========================
+        # FINAL QUALITY SCORE
+        # =========================
+        quality_score = (
+            0.50 * vif_score +
+            0.30 * miss_score +
+            0.20 * var_score
+        )
+
+        result[feat] = round(quality_score, 2)
 
     return result
 
@@ -935,64 +1008,155 @@ def _compute_stability_score(
     top_k: int,
     n_runs: int = FS_STABILITY_RUNS,
 ) -> Dict[str, float]:
-    """Bootstrap stability: fraction of runs each feature is in top_k → 0–100."""
+    """
+    Bootstrap Stability Score (0-100)
+
+    Measures how consistently a feature is selected across
+    multiple bootstrap samples.
+
+    Improvements:
+    - 6-method ensemble
+    - 60% consensus threshold
+    - Rank-weighted selection
+    """
+
     try:
         n_total = len(X_df)
-        sample_size = int(min(n_total, FS_STABILITY_MAX_ROWS) * FS_STABILITY_SAMPLE_FRAC)
+
+        sample_size = int(
+            min(n_total, FS_STABILITY_MAX_ROWS)
+            * FS_STABILITY_SAMPLE_FRAC
+        )
         sample_size = max(sample_size, 20)
 
         X_clean = _drop_constant_cols(_safe_fill(X_df))
         y_filled = _safe_fill(y_df)
+
         names = X_clean.columns.tolist()
+
         X_vals = X_clean.values.astype(float)
         y_vals = y_filled.values.astype(float)
+
         y_2d = _to_2d(y_vals)
+
         k = min(top_k, len(names))
 
-        counts: Dict[str, int] = {f: 0 for f in features}
+        stability_points = {f: 0.0 for f in features}
+
         rng = np.random.default_rng(42)
 
-        for run in range(n_runs):
-            idx = rng.choice(n_total, sample_size, replace=True)
-            Xb, yb = X_vals[idx], y_2d[idx]
+        for _ in range(n_runs):
 
-            # Lightweight 3-method ensemble
-            sel_sets: List[set] = []
-            for fn in [
+            idx = rng.choice(
+                n_total,
+                sample_size,
+                replace=True
+            )
+
+            Xb = X_vals[idx]
+            yb = y_2d[idx]
+
+            method_results = []
+
+            methods = [
                 lambda: _m_target_correlation(Xb, yb, names, k),
                 lambda: _m_mutual_information(Xb, yb, names, k),
                 lambda: _m_rf_importance(Xb, yb, names, k),
-            ]:
+            ]
+
+            for fn in methods:
                 try:
                     res = fn()
-                    if res.success:
-                        sel_sets.append(set(res.selected_features))
-                except Exception:
-                    pass
 
-            if not sel_sets:
+                    if (
+                        res is not None
+                        and getattr(res, "success", False)
+                    ):
+                        method_results.append(
+                            res.selected_features[:k]
+                        )
+
+                except Exception:
+                    continue
+
+            if len(method_results) < 3:
                 continue
 
-            # Feature selected if chosen by majority of the 3 lightweight methods
-            all_feats = set(names)
-            for feat in all_feats:
-                votes = sum(1 for s in sel_sets if feat in s)
-                if votes >= len(sel_sets) / 2:
-                    if feat in counts:
-                        counts[feat] += 1
+            required_votes = math.ceil(
+                len(method_results) * 0.60
+            )
 
-        return {f: float(np.clip(counts.get(f, 0) / n_runs * 100, 0, 100)) for f in features}
+            feature_points_this_run = {}
+
+            for ranked_features in method_results:
+
+                for rank, feat in enumerate(ranked_features):
+
+                    if feat not in feature_points_this_run:
+                        feature_points_this_run[feat] = {
+                            "votes": 0,
+                            "score": 0.0,
+                        }
+
+                    feature_points_this_run[feat]["votes"] += 1
+
+                    # Rank weighting
+                    rank_weight = (
+                        (k - rank) / k
+                    )
+
+                    feature_points_this_run[feat]["score"] += rank_weight
+
+            for feat, info in feature_points_this_run.items():
+
+                if feat not in stability_points:
+                    continue
+
+                if info["votes"] >= required_votes:
+
+                    normalized_score = (
+                        info["score"]
+                        / len(method_results)
+                    )
+
+                    stability_points[feat] += normalized_score
+
+        result = {}
+
+        for feat in features:
+
+            score = (
+                stability_points.get(feat, 0.0)
+                / n_runs
+            ) * 100
+
+            result[feat] = round(
+                float(np.clip(score, 0, 100)),
+                2,
+            )
+
+        return result
+
     except Exception:
-        return {f: 50.0 for f in features}
 
-
+        return {
+            f: 50.0
+            for f in features
+        }
+        
+        
 def _assign_recommendation(
-    final: float, pred_strength: float, quality: float, vif: Optional[float]
+    final: float, pred_strength: float, quality: float, vif: Optional[float], correlation: float,
 ) -> str:
     """Multi-condition recommendation assignment with quality gate."""
-    if pred_strength < FS_WEAK_MAX_PRED_STRENGTH:
+    
+    vif_val = np.inf if vif is None or np.isnan(vif) else float(vif)
+    if abs(correlation) < 0.05 and pred_strength < 50:
         return "Weak Feature"
-    vif_val = vif if (vif is not None and not np.isnan(vif)) else 0.0
+
+    if (pred_strength < FS_WEAK_MAX_PRED_STRENGTH or quality < FS_WEAK_MAX_QUALITY):
+        return "Weak Feature"
+    
     if (
         final >= FS_HIGHLY_REC_MIN_FINAL
         and pred_strength >= FS_HIGHLY_REC_MIN_PRED_STRENGTH
@@ -1000,10 +1164,13 @@ def _assign_recommendation(
         and vif_val < FS_HIGHLY_REC_MAX_VIF
     ):
         return "Highly Recommended"
-    if final >= FS_RECOMMENDED_MIN_FINAL and pred_strength >= FS_RECOMMENDED_MIN_PRED_STRENGTH:
+    
+    if (final >= FS_RECOMMENDED_MIN_FINAL and pred_strength >= FS_RECOMMENDED_MIN_PRED_STRENGTH and quality >= FS_RECOMMENDED_MIN_QUALITY):
         return "Recommended"
+    
     if final >= FS_CONSIDER_MIN_FINAL:
         return "Consider"
+
     return "Weak Feature"
 
 
@@ -1076,8 +1243,11 @@ def _aggregate_consensus(
         fq   = fq_scores.get(feat, 70.0)
         stab = stab_scores.get(feat, 50.0)
 
+        # Prevent weak features from benefiting too much from consensus
+        adjusted_freq_score = freq_score * (max(ps, 25.0) / 100.0)
+
         final_score = round(
-            FS_WEIGHT_SELECTION_FREQ      * freq_score
+            FS_WEIGHT_SELECTION_FREQ * adjusted_freq_score
             + FS_WEIGHT_PREDICTIVE_STRENGTH * ps
             + FS_WEIGHT_FEATURE_QUALITY     * fq
             + FS_WEIGHT_STABILITY           * stab,
@@ -1091,6 +1261,7 @@ def _aggregate_consensus(
         recommendation = _assign_recommendation(
             final_score, ps, fq,
             vif if not np.isnan(vif) else None,
+            avg_corr if not np.isnan(avg_corr) else 0.0,
         )
 
         # Lasso / ElasticNet selection flags
@@ -1187,11 +1358,16 @@ def _generate_reasoning(
         reason_lines.append(f"🔵 Selected by {n_sel} of {n_tot} methods (moderate consensus)")
     else:
         reason_lines.append(f"⚠️ Selected by only {n_sel} of {n_tot} methods (low consensus)")
-        if freq_pct > 60 and ps < 40:
+        
+    if freq_pct > 60 and ps < 40:
             reason_lines.append("⚠️ Weak evidence despite high selection frequency")
 
     # Predictive strength reasons
     if ps >= 70:
+        if abs(avg_corr) < 0.2:
+            reason_lines.append(
+                "ℹ️ Predictive signal appears primarily non-linear rather than linear"
+            )
         reason_lines.append(f"✅ High predictive power (Strength: {ps:.1f})")
     elif ps >= 50:
         reason_lines.append(f"🔵 Moderate predictive power (Strength: {ps:.1f})")
@@ -1233,11 +1409,20 @@ def _generate_reasoning(
             reason_lines.append(f"✅ Low multicollinearity (VIF = {vif:.1f})")
 
     # Correlation with target
-    if avg_corr < 0.1:
+    if abs(avg_corr) < 0.1:
         reason_lines.append("🔴 Low correlation with target")
-    elif avg_corr >= 0.5:
+    elif abs(avg_corr) >= 0.5:
         reason_lines.append(f"✅ Strong correlation with target (|r| = {avg_corr:.3f})")
 
+    if fq >= 80:
+        reason_lines.append(
+            f"✅ Excellent feature quality (Score: {fq:.1f})"
+        )
+
+    elif fq < 40:
+        reason_lines.append(
+            f"⚠️ Poor feature quality (Score: {fq:.1f})"
+        )
     # Stability
     if stab >= 75:
         reason_lines.append(f"✅ Stable across bootstrap runs ({stab:.0f}%)")
@@ -1288,28 +1473,53 @@ def _generate_reasoning(
     # Business interpretation
     lines.append("")
     lines.append("**Business Interpretation:**")
+    
     if rec == "Highly Recommended":
-        lines.append(
-            f"This feature shows {_corr_strength(avg_corr)} linear correlation with the target but"
-            "it is consistently identified as important across multiple independent methods. "
-            "Include it as a primary input for the soft sensor model."
-        )
+
+        if abs(avg_corr) < 0.3 and ps >= 70:
+            lines.append(
+                "This feature exhibits weak linear correlation with the target but "
+                "strong predictive value through model-based methods (SHAP, permutation "
+                "importance, tree-based importance, etc.). "
+                "Include it as a primary input for the soft sensor model."
+            )
+
+        elif abs(avg_corr) >= 0.3:
+            lines.append(
+                "This feature demonstrates both statistical and model-based predictive "
+                "strength and should be considered a primary input for the soft sensor model."
+            )
+
+        else:
+            lines.append(
+                "This feature is consistently identified as important across multiple "
+                "independent methods and should be retained in the model."
+            )
+        
     elif rec == "Recommended":
         lines.append(
             f"This feature contributes meaningful predictive information "
             f"(selected by {n_sel}/{n_tot} methods). "
             "Recommended as a supporting input feature."
         )
+        
     elif rec == "Consider":
         lines.append(
             "Marginal predictive value. Include only if domain knowledge strongly "
             "supports its relevance, or if the model underfits without it."
         )
     else:
-        lines.append(
-            "Weak predictive signal detected. Removing this feature is unlikely "
-            "to reduce model accuracy and will simplify the model."
-        )
+        if ps < 30:
+            lines.append(
+                "Weak predictive signal detected across statistical and model-based methods. "
+                "Removing this feature is unlikely to reduce model performance."
+            )
+        else:
+            lines.append(
+                "This feature did not meet the quality and recommendation thresholds "
+                "required for inclusion in the final feature set."
+            )
+
         if vif is not None and vif > _VIF_HIGH:
             lines.append(
                 "The high VIF confirms this feature is largely redundant — "

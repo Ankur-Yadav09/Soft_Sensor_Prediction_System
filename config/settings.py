@@ -71,24 +71,29 @@ FS_WEIGHT_FEATURE_QUALITY:      float = 0.20
 FS_WEIGHT_STABILITY:            float = 0.15
 
 # Predictive Strength sub-weights (sum = 1.0)
-FS_PS_CORR_WEIGHT:  float = 0.15
+FS_PS_CORR_WEIGHT:  float = 0.10
 FS_PS_MI_WEIGHT:    float = 0.15
 FS_PS_RF_WEIGHT:    float = 0.10
 FS_PS_XGB_WEIGHT:   float = 0.10
-FS_PS_LGB_WEIGHT:   float = 0.10
-FS_PS_PERM_WEIGHT:  float = 0.20
+FS_PS_LGB_WEIGHT:   float = 0.05
+FS_PS_PERM_WEIGHT:  float = 0.25
 FS_PS_SHAP_WEIGHT:  float = 0.15
-FS_PS_MRMR_WEIGHT:  float = 0.05
+FS_PS_MRMR_WEIGHT:  float = 0.10
 
 # Recommendation thresholds
-FS_HIGHLY_REC_MIN_FINAL:          float = 70.0
-FS_HIGHLY_REC_MIN_PRED_STRENGTH:  float = 60.0
-FS_HIGHLY_REC_MIN_QUALITY:        float = 40.0
+FS_HIGHLY_REC_MIN_FINAL:          float = 80.0
+FS_HIGHLY_REC_MIN_PRED_STRENGTH:  float = 70.0
+FS_HIGHLY_REC_MIN_QUALITY:        float = 60.0
 FS_HIGHLY_REC_MAX_VIF:            float = 10.0
+
 FS_RECOMMENDED_MIN_FINAL:         float = 60.0
 FS_RECOMMENDED_MIN_PRED_STRENGTH: float = 50.0
+FS_RECOMMENDED_MIN_QUALITY:       float = 40.0
+
 FS_CONSIDER_MIN_FINAL:            float = 40.0
+
 FS_WEAK_MAX_PRED_STRENGTH:        float = 30.0
+FS_WEAK_MAX_QUALITY:               float = 20.0
 
 # Stability bootstrap
 FS_STABILITY_RUNS:       int   = 20
