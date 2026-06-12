@@ -109,12 +109,24 @@ def render_loss_curves(
     epoch_pred_losses:  List[float],
     val_recon_losses:   List[float],
     val_pred_losses:    List[float],
+    model_type: str = "DAE",
 ) -> None:
     """
-    Two matplotlib subplots: reconstruction loss and prediction loss.
-
-    Displayed side by side in two Streamlit columns.
+    Loss curve plots. DAE shows two charts (reconstruction + predictor).
+    LSTM shows one chart (training loss vs validation loss).
     """
+    if model_type == "LSTM":
+        st.subheader("LSTM Training Loss")
+        fig, ax = plt.subplots()
+        ax.plot(epoch_pred_losses, color="orange", label="Train Loss")
+        ax.plot(val_pred_losses,   color="red",    label="Validation Loss")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss")
+        ax.legend()
+        st.pyplot(fig)
+        plt.close(fig)
+        return
+
     col1, col2 = st.columns(2)
 
     with col1:

@@ -184,6 +184,7 @@ def split_and_scale(
     data_y: pd.DataFrame,
     test_size: float | None = None,
     stratify_bins: int = 0,
+    split_method: str = "random",
 ) -> Tuple[
     np.ndarray,     # X_train  (scaled)
     np.ndarray,     # X_test   (scaled)
@@ -202,26 +203,36 @@ def split_and_scale(
     stratify_bins : >0 → stratified split using quantile-binning of the first
                     Y column into ``stratify_bins`` equal-frequency bins.
                     0 → plain random split (default).
+    split_method  : "random" (default) or "sequential" (preserves row order;
+                    first N rows → train, remaining → test — no shuffling).
 
     The scaler is fitted on the training partition only; the test partition
     is transformed with the already-fitted scaler to prevent data leakage.
     """
     effective_test_size = test_size if test_size is not None else TEST_SIZE
 
-    stratify_labels = None
-    if stratify_bins > 0:
-        first_y = data_y.iloc[:, 0]
-        try:
-            stratify_labels = pd.qcut(first_y, q=stratify_bins, labels=False, duplicates="drop")
-        except Exception:
-            stratify_labels = None  # fall back to random if binning fails
+    if split_method == "sequential":
+        n_total = len(data_x)
+        n_train = int(n_total * (1.0 - effective_test_size))
+        X_train = data_x.iloc[:n_train]
+        X_test  = data_x.iloc[n_train:]
+        y_train = data_y.iloc[:n_train]
+        y_test  = data_y.iloc[n_train:]
+    else:
+        stratify_labels = None
+        if stratify_bins > 0:
+            first_y = data_y.iloc[:, 0]
+            try:
+                stratify_labels = pd.qcut(first_y, q=stratify_bins, labels=False, duplicates="drop")
+            except Exception:
+                stratify_labels = None  # fall back to random if binning fails
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        data_x, data_y,
-        test_size=effective_test_size,
-        random_state=RANDOM_STATE,
-        stratify=stratify_labels,
-    )
+        X_train, X_test, y_train, y_test = train_test_split(
+            data_x, data_y,
+            test_size=effective_test_size,
+            random_state=RANDOM_STATE,
+            stratify=stratify_labels,
+        )
 
     scaler_x = StandardScaler()
     scaler_y = StandardScaler()

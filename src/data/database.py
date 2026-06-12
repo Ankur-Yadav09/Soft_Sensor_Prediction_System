@@ -30,8 +30,9 @@ from __future__ import annotations
 
 import datetime
 import io
+import json
 import sqlite3
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -43,7 +44,7 @@ from config.settings import DB_PATH
 
 
 def init_db() -> None:
-    """Create the datasets table if it does not already exist."""
+    """Create all required tables if they do not already exist."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
@@ -54,6 +55,23 @@ def init_db() -> None:
                 num_rows    INTEGER,
                 num_cols    INTEGER,
                 data        BLOB
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS model_registry (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_name   TEXT,
+                algorithm    TEXT,
+                created_at   TEXT,
+                dataset_name TEXT,
+                x_cols       TEXT,
+                y_cols       TEXT,
+                avg_r2       REAL,
+                avg_rmse     REAL,
+                avg_mae      REAL,
+                file_path    TEXT
             )
             """
         )
@@ -144,4 +162,74 @@ def delete_dataset_from_db(name: str) -> None:
     """Remove a dataset record (and its Parquet blob) by name."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("DELETE FROM datasets WHERE name = ?", (name,))
+        conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Model registry
+# ---------------------------------------------------------------------------
+
+
+def save_model_to_registry(
+    model_name: str,
+    algorithm: str,
+    dataset_name: str,
+    x_cols: List[str],
+    y_cols: List[str],
+    avg_r2: float,
+    avg_rmse: float,
+    avg_mae: float,
+    file_path: str,
+) -> int:
+    """Insert a model record into the registry. Returns the new row id."""
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO model_registry
+                (model_name, algorithm, created_at, dataset_name,
+                 x_cols, y_cols, avg_r2, avg_rmse, avg_mae, file_path)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                model_name, algorithm, now, dataset_name,
+                json.dumps(x_cols), json.dumps(y_cols),
+                round(float(avg_r2), 4), round(float(avg_rmse), 4), round(float(avg_mae), 4),
+                file_path,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def list_models_from_registry() -> List[Dict]:
+    """Return all model registry records ordered by most recent first."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT id, model_name, algorithm, created_at, dataset_name, "
+            "x_cols, y_cols, avg_r2, avg_rmse, avg_mae, file_path "
+            "FROM model_registry ORDER BY created_at DESC"
+        ).fetchall()
+    result = []
+    for r in rows:
+        result.append({
+            "id":           r[0],
+            "model_name":   r[1],
+            "algorithm":    r[2],
+            "created_at":   r[3],
+            "dataset_name": r[4],
+            "x_cols":       json.loads(r[5]) if r[5] else [],
+            "y_cols":       json.loads(r[6]) if r[6] else [],
+            "avg_r2":       r[7],
+            "avg_rmse":     r[8],
+            "avg_mae":      r[9],
+            "file_path":    r[10],
+        })
+    return result
+
+
+def delete_model_from_registry(model_id: int) -> None:
+    """Remove a model registry entry by id."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM model_registry WHERE id = ?", (model_id,))
         conn.commit()

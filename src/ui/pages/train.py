@@ -24,6 +24,7 @@ Features
 from __future__ import annotations
 
 import datetime
+import os
 
 import numpy as np
 import pandas as pd
@@ -39,6 +40,7 @@ from config.settings import (
     DEFAULT_MASKING_RATIO,
     DEFAULT_WEIGHT_TO_PRED,
 )
+from src.data.database import save_model_to_registry
 from src.evaluation.metrics import compute_metrics
 from src.models.wrappers import DAEWrapper
 from src.persistence.model_store import (
@@ -433,6 +435,22 @@ def render() -> None:
             model_name,
         )
 
+        dataset_name = next(iter(st.session_state.data_history), "Unknown")
+        try:
+            save_model_to_registry(
+                model_name=model_name,
+                algorithm=model_type,
+                dataset_name=dataset_name,
+                x_cols=st.session_state.x_cols,
+                y_cols=st.session_state.y_cols,
+                avg_r2=avg_r2,
+                avg_rmse=avg_rmse,
+                avg_mae=avg_mae,
+                file_path=os.path.join("saved_models", model_name),
+            )
+        except Exception:
+            pass  # registry write failure must not block training success
+
         st.success(
             f"✅ **{model_type}** trained and saved as **{model_name}** | "
             f"Avg R² = `{avg_r2:.4f}` | Avg RMSE = `{avg_rmse:.4f}`"
@@ -449,4 +467,5 @@ def render() -> None:
                 loss_history["epoch_pred_losses"],
                 loss_history["val_recon_losses"],
                 loss_history["val_pred_losses"],
+                model_type=model_type,
             )

@@ -571,13 +571,16 @@ def _render_final_apply(df: pd.DataFrame, x_cols: List[str], y_cols: List[str]) 
     with sp_c1:
         split_method = st.selectbox(
             "Split Method",
-            ["Random Split", "Stratified Split"],
+            ["Random Split", "Stratified Split", "Sequential Split"],
             key="fs_split_method",
             help=(
                 "Random Split: rows are shuffled and divided at the chosen ratio.  \n"
                 "Stratified Split: first Y column is quantile-binned so that the "
                 "value distribution is similar in train and test sets — useful when "
-                "the target has a skewed or imbalanced distribution."
+                "the target has a skewed or imbalanced distribution.  \n"
+                "Sequential Split: preserves chronological row order — first N% of "
+                "rows go to training, last M% to testing. Recommended for time-series "
+                "and process sensor data to prevent future information leakage."
             ),
         )
     with sp_c2:
@@ -608,6 +611,11 @@ def _render_final_apply(df: pd.DataFrame, x_cols: List[str], y_cols: List[str]) 
                 f"Stratification: first Y column (`{y_cols[0]}`) will be binned into "
                 "5 equal-frequency quantile groups to ensure balanced distribution across splits."
             )
+        elif split_method == "Sequential Split":
+            st.caption(
+                f"Sequential: rows 1–{n_train} → Train | rows {n_train+1}–{n_total} → Test. "
+                "Row order is preserved; no shuffling."
+            )
 
     st.markdown("---")
 
@@ -629,13 +637,19 @@ def _render_final_apply(df: pd.DataFrame, x_cols: List[str], y_cols: List[str]) 
         data_x, data_y = impute(data_x, data_y, imputation_method)
 
         stratify_bins = 5 if split_method == "Stratified Split" else 0
+        seq_split = split_method == "Sequential Split"
 
         (
             X_train_s, X_test_s,
             y_train_s, y_test_s,
             y_test_raw,
             scaler_x, scaler_y,
-        ) = split_and_scale(data_x, data_y, test_size=test_ratio, stratify_bins=stratify_bins)
+        ) = split_and_scale(
+            data_x, data_y,
+            test_size=test_ratio,
+            stratify_bins=stratify_bins,
+            split_method="sequential" if seq_split else "random",
+        )
 
         st.session_state.X_train    = X_train_s
         st.session_state.X_test     = X_test_s
@@ -647,10 +661,15 @@ def _render_final_apply(df: pd.DataFrame, x_cols: List[str], y_cols: List[str]) 
 
         n_train_actual = X_train_s.shape[0]
         n_test_actual  = X_test_s.shape[0]
+        split_label = split_method
+        if seq_split:
+            split_label = "Sequential Split (rows 1–{} train, {}–{} test)".format(
+                n_train_actual, n_train_actual + 1, n_train_actual + n_test_actual
+            )
         st.success(
             f"Preprocessing complete — **{len(x_cols)}** X features, **{len(y_cols)}** Y target(s).  \n"
             f"Split: **{n_train_actual}** train rows / **{n_test_actual}** test rows "
-            f"({split_method}, {train_ratio*100:.0f}/{test_ratio*100:.0f}).  \n"
+            f"({split_label}, {train_ratio*100:.0f}/{test_ratio*100:.0f}).  \n"
             "StandardScaler applied (fitted on train only). Proceed to the **Train Model** tab."
         )
 
