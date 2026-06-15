@@ -70,15 +70,15 @@ FS_WEIGHT_PREDICTIVE_STRENGTH:  float = 0.40
 FS_WEIGHT_FEATURE_QUALITY:      float = 0.20
 FS_WEIGHT_STABILITY:            float = 0.15
 
-# Predictive Strength sub-weights (sum = 1.0)
+# Predictive Strength sub-weights — 6 active scoring methods (sum = 1.0)
+# RF (0.10) and LGB (0.05) removed; their 0.15 redistributed proportionally
+# to XGBoost, Permutation, SHAP, and mRMR.
 FS_PS_CORR_WEIGHT:  float = 0.10
 FS_PS_MI_WEIGHT:    float = 0.15
-FS_PS_RF_WEIGHT:    float = 0.10
-FS_PS_XGB_WEIGHT:   float = 0.10
-FS_PS_LGB_WEIGHT:   float = 0.05
-FS_PS_PERM_WEIGHT:  float = 0.25
-FS_PS_SHAP_WEIGHT:  float = 0.15
-FS_PS_MRMR_WEIGHT:  float = 0.10
+FS_PS_XGB_WEIGHT:   float = 0.13
+FS_PS_PERM_WEIGHT:  float = 0.31
+FS_PS_SHAP_WEIGHT:  float = 0.19
+FS_PS_MRMR_WEIGHT:  float = 0.12
 
 # Recommendation thresholds
 FS_HIGHLY_REC_MIN_FINAL:          float = 80.0

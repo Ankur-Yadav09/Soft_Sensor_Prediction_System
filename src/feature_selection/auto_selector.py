@@ -49,11 +49,9 @@ from config.settings import (
     FS_HIGHLY_REC_MIN_PRED_STRENGTH,
     FS_HIGHLY_REC_MIN_QUALITY,
     FS_PS_CORR_WEIGHT,
-    FS_PS_LGB_WEIGHT,
     FS_PS_MI_WEIGHT,
     FS_PS_MRMR_WEIGHT,
     FS_PS_PERM_WEIGHT,
-    FS_PS_RF_WEIGHT,
     FS_PS_SHAP_WEIGHT,
     FS_PS_XGB_WEIGHT,
     FS_RECOMMENDED_MIN_FINAL,
@@ -132,22 +130,47 @@ ALL_METHOD_IDS = [
     "pca_analysis",
 ]
 
+# The 10 methods that contribute to Selection Frequency, Predictive Strength,
+# and Final Score. The remaining 5 always run but are informational only.
+_SCORING_METHOD_IDS: frozenset = frozenset([
+    "target_correlation",
+    "f_test",
+    "mutual_information",
+    "mrmr",
+    "xgboost_importance",
+    "permutation_importance",
+    "shap_importance",
+    "lasso",
+    "elasticnet",
+    "rfe",
+])
+
+# The 5 informational methods — always run automatically, shown for context,
+# but excluded from SelectionFreq, PredictiveStrength, and FinalScore.
+INFORMATIONAL_METHOD_IDS: frozenset = frozenset([
+    "rf_importance",
+    "lightgbm_importance",
+    "sfs_forward",
+    "sfs_backward",
+    "pca_analysis",
+])
+
 METHOD_LABELS: Dict[str, str] = {
     "target_correlation":    "Target Correlation",
     "f_test":                "F-Test (ANOVA)",
     "mutual_information":    "Mutual Information",
     "mrmr":                  "mRMR",
-    "rf_importance":         "Random Forest Importance",
+    "rf_importance":         "Random Forest Importance (Informational)",
     "xgboost_importance":    "XGBoost Importance",
-    "lightgbm_importance":   "LightGBM Importance",
+    "lightgbm_importance":   "LightGBM Importance (Informational)",
     "permutation_importance":"Permutation Importance",
     "shap_importance":       "SHAP Importance",
     "lasso":                 "Lasso Regression",
     "elasticnet":            "Elastic Net",
     "rfe":                   "Recursive Feature Elimination",
-    "sfs_forward":           "Sequential Forward Selection",
-    "sfs_backward":          "Sequential Backward Selection",
-    "pca_analysis":          "PCA Loadings Analysis",
+    "sfs_forward":           "Sequential Forward Selection (Informational)",
+    "sfs_backward":          "Sequential Backward Selection (Informational)",
+    "pca_analysis":          "PCA Loadings Analysis (Informational)",
 }
 
 METHOD_CATEGORIES: Dict[str, str] = {
@@ -168,13 +191,12 @@ METHOD_CATEGORIES: Dict[str, str] = {
     "pca_analysis":          "Dimensionality Reduction",
 }
 
-# Predictive Strength method source IDs and their config weights
+# Predictive Strength method source IDs and their config weights.
+# Only the 6 independent methods below contribute; RF and LGB are excluded.
 _PS_METHOD_WEIGHTS: Dict[str, float] = {
     "target_correlation":    FS_PS_CORR_WEIGHT,
     "mutual_information":    FS_PS_MI_WEIGHT,
-    "rf_importance":         FS_PS_RF_WEIGHT,
     "xgboost_importance":    FS_PS_XGB_WEIGHT,
-    "lightgbm_importance":   FS_PS_LGB_WEIGHT,
     "permutation_importance":FS_PS_PERM_WEIGHT,
     "shap_importance":       FS_PS_SHAP_WEIGHT,
     "mrmr":                  FS_PS_MRMR_WEIGHT,
@@ -264,6 +286,31 @@ def _failed(method_id: str, names: List[str], top_k: int, err: str) -> MethodRes
         notes=f"Failed: {err}",
         success=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# Average Rank helper (informational only — does not affect scoring)
+# ---------------------------------------------------------------------------
+
+def _compute_avg_rank(
+    features: List[str],
+    scoring_results: List[MethodResult],
+) -> Dict[str, float]:
+    """
+    For each feature compute its average rank across all successful scoring methods.
+    Rank 1 = highest raw score within that method. Lower = consistently top ranked.
+    """
+    feature_ranks: Dict[str, List[int]] = {feat: [] for feat in features}
+    for r in scoring_results:
+        if not r.success:
+            continue
+        sorted_feats = sorted(features, key=lambda f: r.raw_scores.get(f, 0.0), reverse=True)
+        for rank, feat in enumerate(sorted_feats, start=1):
+            feature_ranks[feat].append(rank)
+    return {
+        feat: round(float(np.mean(ranks)), 2) if ranks else float(len(features))
+        for feat, ranks in feature_ranks.items()
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1191,9 +1238,10 @@ def _aggregate_consensus(
     y_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
 
-    successful = [r for r in method_results if r.success]
-    n_methods = len(successful)
-    if n_methods == 0:
+    successful      = [r for r in method_results if r.success]
+    scoring_results = [r for r in successful if r.method_id in _SCORING_METHOD_IDS]
+    n_scoring       = len(scoring_results)
+    if n_scoring == 0:
         return pd.DataFrame()
 
     # Build VIF lookup
@@ -1212,7 +1260,8 @@ def _aggregate_consensus(
         p_lookup = f_test_result.metadata.get("p_values", {})
 
     # --- New scoring components ---
-    ps_scores   = _compute_predictive_strength(all_features, method_results)
+    ps_scores      = _compute_predictive_strength(all_features, method_results)
+    avg_rank_scores = _compute_avg_rank(all_features, scoring_results)
 
     # Missing % per feature for quality score
     missing_pct: Dict[str, float] = {}
@@ -1232,11 +1281,11 @@ def _aggregate_consensus(
 
     rows = []
     for feat in all_features:
-        sel_count = sum(1 for r in successful if feat in r.selected_features)
-        norm_scores = [r.all_scores.get(feat, 0.0) for r in successful]
-        avg_norm = float(np.mean(norm_scores))
+        sel_count   = sum(1 for r in scoring_results if feat in r.selected_features)
+        norm_scores = [r.all_scores.get(feat, 0.0) for r in scoring_results]
+        avg_norm    = float(np.mean(norm_scores)) if norm_scores else 0.0
 
-        freq = sel_count / n_methods
+        freq       = sel_count / n_scoring
         freq_score = freq * 100.0
 
         ps   = ps_scores.get(feat, 0.0)
@@ -1277,7 +1326,7 @@ def _aggregate_consensus(
         rows.append({
             "Feature":              feat,
             "SelectionCount":       sel_count,
-            "TotalMethods":         n_methods,
+            "TotalMethods":         n_scoring,
             "SelectionFreq":        round(freq * 100, 1),
             "PredictiveStrength":   round(ps, 1),
             "FeatureQuality":       round(fq, 1),
@@ -1285,6 +1334,7 @@ def _aggregate_consensus(
             "FinalScore":           final_score,
             "ConfidenceScore":      final_score,   # kept for backward compat
             "AvgNormScore":         round(avg_norm, 4),
+            "AvgRank":              avg_rank_scores.get(feat, float(len(all_features))),
             "CorrWithTarget":       round(float(avg_corr), 4) if not np.isnan(avg_corr) else None,
             "VIF":                  round(float(vif), 2) if not np.isnan(vif) else None,
             "PValue":               round(float(p_val), 4) if not np.isnan(p_val) else None,
@@ -1335,6 +1385,7 @@ def _generate_reasoning(
     n_tot      = int(row.get("TotalMethods", 1))
     avg_corr   = float(row.get("CorrWithTarget", 0) or 0)
     vif        = row.get("VIF")
+    avg_rank   = row.get("AvgRank")
 
     # Score card table
     lines.append(f"**{feat}** — _{rec}_")
@@ -1345,7 +1396,9 @@ def _generate_reasoning(
     lines.append(f"| Predictive Strength | {ps:.1f} |")
     lines.append(f"| Feature Quality | {fq:.1f} |")
     lines.append(f"| Stability Score | {stab:.1f} |")
-    lines.append(f"| Selection Frequency | {freq_pct:.1f}% ({n_sel}/{n_tot} methods) |")
+    lines.append(f"| Selection Frequency | {freq_pct:.1f}% ({n_sel}/{n_tot} independent methods) |")
+    if avg_rank is not None:
+        lines.append(f"| Average Rank *(informational)* | {avg_rank:.1f} |")
     lines.append("")
 
     # Reason tags
@@ -1353,14 +1406,23 @@ def _generate_reasoning(
 
     # Selection frequency reasons
     if freq_pct >= 75:
-        reason_lines.append(f"✅ Selected by {n_sel} of {n_tot} methods (high consensus)")
+        reason_lines.append(f"✅ Selected by {n_sel} of {n_tot} independent methods (high consensus)")
     elif freq_pct >= 50:
-        reason_lines.append(f"🔵 Selected by {n_sel} of {n_tot} methods (moderate consensus)")
+        reason_lines.append(f"🔵 Selected by {n_sel} of {n_tot} independent methods (moderate consensus)")
     else:
-        reason_lines.append(f"⚠️ Selected by only {n_sel} of {n_tot} methods (low consensus)")
+        reason_lines.append(f"⚠️ Selected by only {n_sel} of {n_tot} independent methods (low consensus)")
         
     if freq_pct > 60 and ps < 40:
-            reason_lines.append("⚠️ Weak evidence despite high selection frequency")
+        reason_lines.append("⚠️ Weak evidence despite high selection frequency")
+
+    # Average rank interpretation (informational)
+    if avg_rank is not None:
+        if avg_rank <= 3:
+            reason_lines.append(f"✅ Consistently top ranked across methods (Avg Rank: {avg_rank:.1f})")
+        elif avg_rank <= 7:
+            reason_lines.append(f"🔵 Moderately ranked across methods (Avg Rank: {avg_rank:.1f})")
+        else:
+            reason_lines.append(f"⚠️ Lower ranked across methods (Avg Rank: {avg_rank:.1f})")
 
     # Predictive strength reasons
     if ps >= 70:
@@ -1462,13 +1524,16 @@ def _generate_reasoning(
     if reg_parts:
         lines.append("**Regularisation:** " + " | ".join(reg_parts))
 
-    # Methods that selected / rejected this feature
-    sel_by = [r.name for r in method_results if r.success and feat in r.selected_features]
-    not_by = [r.name for r in method_results if r.success and feat not in r.selected_features]
+    # Methods that selected / rejected this feature (scoring methods only)
+    sel_by  = [r.name for r in method_results if r.success and r.method_id in _SCORING_METHOD_IDS and feat in r.selected_features]
+    not_by  = [r.name for r in method_results if r.success and r.method_id in _SCORING_METHOD_IDS and feat not in r.selected_features]
+    info_by = [r.name for r in method_results if r.success and r.method_id not in _SCORING_METHOD_IDS]
     if sel_by:
         lines.append(f"**Selected by:** {', '.join(sel_by)}")
     if not_by:
         lines.append(f"**Not selected by:** {', '.join(not_by)}")
+    if info_by:
+        lines.append(f"**Informational (not scored):** {', '.join(info_by)}")
 
     # Business interpretation
     lines.append("")
@@ -1613,19 +1678,13 @@ def run_auto_feature_selection(
 
     # ---- 4. Determine which methods to run ------------------------------
     if enabled_methods is None:
-        # Auto-select based on dataset size
+        # Auto-select the 10 independent scoring methods
         enabled_methods = [
             "target_correlation", "f_test", "mutual_information",
-            "mrmr", "rf_importance", "lasso", "elasticnet", "rfe", "pca_analysis",
+            "mrmr", "lasso", "elasticnet", "rfe",
         ]
-        if len(names) <= _MAX_FEATURES_SFS:
-            enabled_methods.append("sfs_forward")
-        if len(names) <= _MAX_FEATURES_SFS_BK:
-            enabled_methods.append("sfs_backward")
         if _XGBOOST_AVAILABLE:
             enabled_methods.append("xgboost_importance")
-        if _LIGHTGBM_AVAILABLE:
-            enabled_methods.append("lightgbm_importance")
         if len(names) <= _MAX_FEATURES_NEW:
             enabled_methods.append("permutation_importance")
             if _SHAP_AVAILABLE:

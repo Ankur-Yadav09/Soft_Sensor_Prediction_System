@@ -29,7 +29,6 @@ from typing import Dict, List
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -41,17 +40,14 @@ from src.data.preprocessing import (
 )
 from src.feature_selection.auto_selector import (
     ALL_METHOD_IDS,
+    INFORMATIONAL_METHOD_IDS,
     METHOD_CATEGORIES,
     METHOD_LABELS,
     AutoSelectionResult,
     run_auto_feature_selection,
-    _MAX_FEATURES_SFS,
-    _MAX_FEATURES_SFS_BK,
     _MAX_FEATURES_NEW,
     _XGBOOST_AVAILABLE,
-    _LIGHTGBM_AVAILABLE,
     _SHAP_AVAILABLE,
-    _SFS_AVAILABLE,
 )
 
 # ---------------------------------------------------------------------------
@@ -170,82 +166,137 @@ def _plot_consensus_bar(consensus_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def _plot_correlation_heatmap(corr_matrix: pd.DataFrame, title: str = "Feature Correlation Matrix") -> go.Figure:
-    cols = corr_matrix.columns.tolist()[:40]
-    data = corr_matrix.loc[cols, cols]
-    fig = px.imshow(data, color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
-                    title=title, labels=dict(color="Pearson r"), aspect="auto")
-    fig.update_layout(
-        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        font_color="#f8fafc", height=max(400, len(cols) * 18 + 100),
-        margin=dict(l=5, r=5, t=50, b=5),
-    )
-    return fig
+def _plot_ranking_matrix(
+    consensus_df: pd.DataFrame,
+    method_results: list,
+    sort_by: str = "Final Score",
+    filter_cats: List[str] = None,
+) -> go.Figure:
+    """
+    Feature Ranking Matrix — heatmap showing each feature's rank within every
+    active scoring method.  Purely informational; does not affect any score.
+    """
+    # --- sort ---
+    sort_col_map = {
+        "Final Score":         "FinalScore",
+        "Predictive Strength": "PredictiveStrength",
+        "Selection Frequency": "SelectionFreq",
+        "Average Rank":        "AvgRank",
+    }
+    sort_col = sort_col_map.get(sort_by, "FinalScore")
+    df = consensus_df.reset_index()
 
-
-def _plot_vif_chart(vif_df: pd.DataFrame) -> go.Figure:
-    df = vif_df.dropna(subset=["VIF"]).copy()
+    # --- filter ---
+    if filter_cats:
+        legacy = {"Consider": "Optional", "Weak Feature": "Remove"}
+        all_cats = filter_cats + [legacy.get(c, "") for c in filter_cats]
+        df = df[df["Recommendation"].isin(all_cats)]
     if df.empty:
         return go.Figure()
-    df = df.sort_values("VIF", ascending=True).tail(30)
-    colors = [
-        _REC_COLORS["Remove"]      if v > 10
-        else _REC_COLORS["Optional"]   if v > 5
-        else _REC_COLORS["Recommended"]
-        for v in df["VIF"]
+
+    ascending = sort_col == "AvgRank"
+    df = df.sort_values(sort_col, ascending=ascending)
+    features = df["Feature"].tolist()
+
+    # --- method order (scoring methods only, those that ran) ---
+    METHOD_ORDER = [
+        ("target_correlation",    "Correlation"),
+        ("f_test",                "F-Test"),
+        ("mutual_information",    "Mut. Info"),
+        ("mrmr",                  "mRMR"),
+        ("xgboost_importance",    "XGBoost"),
+        ("shap_importance",       "SHAP"),
+        ("permutation_importance","Permutation"),
+        ("rfe",                   "RFE"),
+        ("lasso",                 "Lasso"),
+        ("elasticnet",            "ElasticNet"),
     ]
-    fig = go.Figure(go.Bar(
-        x=df["VIF"], y=df["Feature"], orientation="h",
-        marker_color=colors,
-        text=[f"{v:.1f}" for v in df["VIF"]], textposition="outside",
-        hovertemplate="<b>%{y}</b><br>VIF: %{x:.2f}<extra></extra>",
-    ))
-    fig.add_vline(x=5,  line_dash="dash", line_color=_REC_COLORS["Optional"],
-                  annotation_text="Moderate (5)",  annotation_position="top right")
-    fig.add_vline(x=10, line_dash="dash", line_color=_REC_COLORS["Remove"],
-                  annotation_text="High (10)", annotation_position="top right")
-    fig.update_layout(
-        title="Variance Inflation Factor (VIF)", xaxis_title="VIF",
-        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        font_color="#f8fafc", height=max(350, len(df) * 22 + 80),
-        margin=dict(l=10, r=80, t=40, b=20),
-    )
-    return fig
+    SELECTION_METHODS = {"lasso", "elasticnet"}
 
-
-def _plot_target_corr_heatmap(corr_with_target: pd.DataFrame) -> go.Figure:
-    if corr_with_target.empty:
+    ran = {r.method_id: r for r in method_results if r.success}
+    active = [(mid, lbl) for mid, lbl in METHOD_ORDER if mid in ran]
+    if not active:
         return go.Figure()
-    data = corr_with_target.head(40)
-    fig = px.imshow(data, color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
-                    title="Feature–Target Correlation", labels=dict(color="Pearson r"), aspect="auto")
-    fig.update_layout(
-        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        font_color="#f8fafc", height=max(350, len(data) * 22 + 100),
-        margin=dict(l=5, r=5, t=50, b=5),
-    )
-    return fig
 
+    method_ids    = [mid for mid, _ in active]
+    method_labels = [lbl for _, lbl in active]
 
-def _plot_method_summary(method_results: list) -> go.Figure:
-    cat_colors = {
-        "Supervised": _PRIMARY, "Feature Importance": _ACCENT,
-        "Intrinsic": "#8b5cf6", "Wrapper": _WARN, "Dimensionality Reduction": "#ec4899",
-    }
-    names, counts, colors_list = [], [], []
-    for r in method_results:
-        names.append(r.name)
-        counts.append(len(r.selected_features) if r.success else 0)
-        colors_list.append(cat_colors.get(r.category, "#94a3b8") if r.success else "#4b5563")
-    fig = go.Figure(go.Bar(
-        x=names, y=counts, marker_color=colors_list,
-        text=counts, textposition="outside",
-        hovertemplate="<b>%{x}</b><br>Features Selected: %{y}<extra></extra>",
+    # Precompute full-dataset rank maps (rank within ALL features seen by each method)
+    rank_maps: Dict[str, tuple] = {}
+    for mid in method_ids:
+        r = ran[mid]
+        all_feats = list(r.raw_scores.keys())
+        sorted_f  = sorted(all_feats, key=lambda f: r.raw_scores.get(f, 0.0), reverse=True)
+        rank_maps[mid] = ({f: i + 1 for i, f in enumerate(sorted_f)}, len(sorted_f))
+
+    # --- build z / text / hover matrices ---
+    z_vals, texts, hovers = [], [], []
+    for feat in features:
+        z_row, t_row, h_row = [], [], []
+        for mid in method_ids:
+            r = ran[mid]
+            if mid in SELECTION_METHODS:
+                selected = feat in r.selected_features
+                z_row.append(1.0 if selected else 0.0)
+                t_row.append("✓" if selected else "✗")
+                h_row.append(
+                    f"<b>{feat}</b><br>Method: {METHOD_LABELS[mid]}<br>"
+                    f"{'Selected' if selected else 'Not Selected'}"
+                )
+            else:
+                rank_map, n_total = rank_maps[mid]
+                if feat in rank_map:
+                    rank     = rank_map[feat]
+                    goodness = (n_total - rank) / max(n_total - 1, 1)
+                    z_row.append(goodness)
+                    t_row.append(str(rank))
+                    h_row.append(
+                        f"<b>{feat}</b><br>Method: {METHOD_LABELS[mid]}<br>"
+                        f"Rank: {rank} of {n_total}"
+                    )
+                else:
+                    z_row.append(None)
+                    t_row.append("")
+                    h_row.append(f"<b>{feat}</b><br>Method: {METHOD_LABELS[mid]}<br>Not evaluated")
+        z_vals.append(z_row)
+        texts.append(t_row)
+        hovers.append(h_row)
+
+    colorscale = [
+        [0.00, "#ef4444"],   # red  — poor / not selected
+        [0.30, "#f59e0b"],   # amber — lower ranks
+        [0.65, "#86efac"],   # light green — top 10
+        [1.00, "#16a34a"],   # dark green — top 3 / selected
+    ]
+
+    fig = go.Figure(go.Heatmap(
+        z=z_vals,
+        x=method_labels,
+        y=features,
+        text=texts,
+        customdata=hovers,
+        hovertemplate="%{customdata}<extra></extra>",
+        texttemplate="%{text}",
+        textfont=dict(size=11, color="white"),
+        colorscale=colorscale,
+        showscale=False,
+        zmin=0.0,
+        zmax=1.0,
     ))
     fig.update_layout(
-        title="Features Selected per Method", xaxis_tickangle=-35, yaxis_title="# Features",
-        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        font_color="#f8fafc", height=380, margin=dict(l=5, r=5, t=50, b=100),
+        title="Feature Ranking Matrix — Cross-Method Comparison",
+        xaxis=dict(
+            title="Feature Selection Method",
+            tickangle=-30,
+            side="top",
+            tickfont=dict(size=11),
+        ),
+        yaxis=dict(title="Feature", autorange="reversed", tickfont=dict(size=11)),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font_color="#f8fafc",
+        height=max(420, len(features) * 32 + 160),
+        margin=dict(l=10, r=10, t=110, b=20),
     )
     return fig
 
@@ -255,18 +306,13 @@ def _plot_method_summary(method_results: list) -> go.Figure:
 # ---------------------------------------------------------------------------
 
 def _build_default_methods(n_feat: int) -> List[str]:
+    """Return the 10 independent scoring methods enabled by default."""
     defaults = [
         "target_correlation", "f_test", "mutual_information",
-        "mrmr", "rf_importance", "lasso", "elasticnet", "rfe", "pca_analysis",
+        "mrmr", "lasso", "elasticnet", "rfe",
     ]
-    if n_feat <= _MAX_FEATURES_SFS and _SFS_AVAILABLE:
-        defaults.append("sfs_forward")
-    if n_feat <= _MAX_FEATURES_SFS_BK and _SFS_AVAILABLE:
-        defaults.append("sfs_backward")
     if _XGBOOST_AVAILABLE:
         defaults.append("xgboost_importance")
-    if _LIGHTGBM_AVAILABLE:
-        defaults.append("lightgbm_importance")
     if n_feat <= _MAX_FEATURES_NEW:
         defaults.append("permutation_importance")
         if _SHAP_AVAILABLE:
@@ -275,13 +321,14 @@ def _build_default_methods(n_feat: int) -> List[str]:
 
 
 def _build_available_methods() -> List[str]:
+    """Return scoring methods available for user selection (informational methods excluded)."""
     avail = []
     for mid in ALL_METHOD_IDS:
+        if mid in INFORMATIONAL_METHOD_IDS:
+            continue  # always run automatically; not user-selectable
         if mid == "xgboost_importance" and not _XGBOOST_AVAILABLE:
             continue
-        if mid == "lightgbm_importance" and not _LIGHTGBM_AVAILABLE:
-            continue
-        if mid in ("sfs_forward", "sfs_backward") and not _SFS_AVAILABLE:
+        if mid == "shap_importance" and not _SHAP_AVAILABLE:
             continue
         avail.append(mid)
     return avail
@@ -302,7 +349,7 @@ def _render_analysis_results(
     cdf  = result.consensus_df
     info = result.dataset_info
 
-    n_methods_ran = sum(1 for r in result.method_results if r.success)
+    n_scoring_ran = sum(1 for r in result.method_results if r.success)
     n_highly = sum(1 for r in cdf["Recommendation"] if r == "Highly Recommended")
     n_rec    = sum(1 for r in cdf["Recommendation"] if r == "Recommended")
     n_opt    = sum(1 for r in cdf["Recommendation"] if r in ("Consider", "Optional"))
@@ -315,7 +362,7 @@ def _render_analysis_results(
     )
 
     kc1, kc2, kc3, kc4, kc5 = st.columns(5)
-    kc1.metric("Methods Run",          n_methods_ran)
+    kc1.metric("Scoring Methods Run",   n_scoring_ran)
     kc2.metric("🟢 Highly Recommended", n_highly)
     kc3.metric("🔵 Recommended",        n_rec)
     kc4.metric("🟡 Consider",           n_opt)
@@ -380,7 +427,7 @@ def _render_analysis_results(
 
         base_cols = [
             "Feature", "SelectionCount", "TotalMethods", "SelectionFreq",
-            "PredictiveStrength", "FeatureQuality", "StabilityScore", "FinalScore",
+            "AvgRank", "PredictiveStrength", "FeatureQuality", "StabilityScore", "FinalScore",
             "CorrWithTarget", "VIF", "PValue",
             "LassoSelected", "ElasticNetSelected", "Recommendation",
         ]
@@ -390,16 +437,41 @@ def _render_analysis_results(
         st.plotly_chart(_plot_consensus_bar(cdf), use_container_width=True)
 
     with tab3:
-        viz1, viz2 = st.columns(2)
-        with viz1:
-            st.plotly_chart(_plot_correlation_heatmap(result.correlation_matrix), use_container_width=True)
-        with viz2:
-            st.plotly_chart(_plot_target_corr_heatmap(result.corr_with_target), use_container_width=True)
-        viz3, viz4 = st.columns(2)
-        with viz3:
-            st.plotly_chart(_plot_vif_chart(result.vif_df), use_container_width=True)
-        with viz4:
-            st.plotly_chart(_plot_method_summary(result.method_results), use_container_width=True)
+        st.markdown("#### Feature Ranking Matrix")
+        st.caption(
+            "Each cell shows a feature's rank within that method (1 = top ranked). "
+            "Lasso / ElasticNet show ✓ (selected) or ✗ (not selected). "
+            "Color: 🟢 top-ranked → 🔴 lower-ranked."
+        )
+
+        ctrl1, ctrl2 = st.columns([1, 2])
+        with ctrl1:
+            viz_sort = st.selectbox(
+                "Sort features by",
+                ["Final Score", "Predictive Strength", "Selection Frequency", "Average Rank"],
+                key="fs_viz_sort",
+            )
+        with ctrl2:
+            all_rec_cats = ["Highly Recommended", "Recommended", "Consider", "Weak Feature"]
+            viz_filter = st.multiselect(
+                "Filter by recommendation",
+                all_rec_cats,
+                default=all_rec_cats,
+                key="fs_viz_filter",
+            )
+
+        fig_matrix = _plot_ranking_matrix(cdf, result.method_results, viz_sort, viz_filter)
+        st.plotly_chart(fig_matrix, use_container_width=True)
+
+        st.markdown(
+            "<div style='font-size:0.82rem;color:#94a3b8'>"
+            "<b style='color:#16a34a'>Dark green</b> = top 3 ranks &nbsp;|&nbsp; "
+            "<b style='color:#86efac'>Light green</b> = top 10 ranks &nbsp;|&nbsp; "
+            "<b style='color:#f59e0b'>Amber</b> = lower ranks &nbsp;|&nbsp; "
+            "<b style='color:#ef4444'>Red</b> = poor ranking / not selected"
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
     with tab4:
         st.markdown("#### Feature Recommendation Cards")
@@ -420,6 +492,7 @@ def _render_analysis_results(
                 stab_val   = row.get("StabilityScore")
                 n_sel      = int(row["SelectionCount"])
                 n_tot      = int(row["TotalMethods"])
+                avg_rank_val = row.get("AvgRank")
                 with st.expander(f"**{feat}** — Final Score: {final_score:.0f}  ({n_sel}/{n_tot} methods)", expanded=(rec_cat == "Highly Recommended")):
                     mc1, mc2, mc3, mc4 = st.columns(4)
                     mc1.metric("Final Score",         f"{final_score:.0f}")
@@ -432,12 +505,15 @@ def _render_analysis_results(
                         mc4.metric("VIF", f"{vif_val:.1f}")
                     # Score breakdown row
                     if ps_val is not None:
-                        sb1, sb2, sb3 = st.columns(3)
+                        sb1, sb2, sb3, sb4 = st.columns(4)
                         sb1.metric("Predictive Strength", f"{ps_val:.1f}")
                         if fq_val is not None:
                             sb2.metric("Feature Quality", f"{fq_val:.1f}")
                         if stab_val is not None:
                             sb3.metric("Stability Score", f"{stab_val:.1f}")
+                        if avg_rank_val is not None:
+                            rank_label = "Top Ranked" if avg_rank_val <= 3 else ("Mid Ranked" if avg_rank_val <= 7 else "Lower Ranked")
+                            sb4.metric("Avg Rank", f"{avg_rank_val:.1f}", help=rank_label)
                     st.markdown(result.per_feature_reasoning.get(feat, ""))
                     st.markdown("---")
 
@@ -793,22 +869,17 @@ def render() -> None:
                 )
 
         with tab_methods:
-            _section_header("📋", "Methods Selection", "Enable / disable individual feature selection methods.")
+            _section_header("📋", "Methods Selection", "Enable / disable the 10 independent scoring methods.")
 
-            for mid in ALL_METHOD_IDS:
-                if mid == "xgboost_importance" and not _XGBOOST_AVAILABLE:
-                    st.caption(f"⚠️ {METHOD_LABELS[mid]} — install `xgboost` to enable")
-                elif mid == "lightgbm_importance" and not _LIGHTGBM_AVAILABLE:
-                    st.caption(f"⚠️ {METHOD_LABELS[mid]} — install `lightgbm` to enable")
-                elif mid in ("sfs_forward", "sfs_backward") and not _SFS_AVAILABLE:
-                    st.caption(f"⚠️ {METHOD_LABELS[mid]} — upgrade scikit-learn to enable")
-                elif mid == "shap_importance" and not _SHAP_AVAILABLE:
-                    st.caption(f"⚠️ {METHOD_LABELS[mid]} — install `shap` to enable")
+            if not _XGBOOST_AVAILABLE:
+                st.caption(f"⚠️ {METHOD_LABELS['xgboost_importance']} — install `xgboost` to enable")
+            if not _SHAP_AVAILABLE:
+                st.caption(f"⚠️ {METHOD_LABELS['shap_importance']} — install `shap` to enable")
 
             enabled_methods = _method_checkboxes(avail_methods, default_methods)
             st.markdown(
                 f"<p style='color:{_MUTED};font-size:0.85rem'><b style='color:#f8fafc'>"
-                f"{len(enabled_methods)}</b> method(s) selected.</p>",
+                f"{len(enabled_methods)}</b> of 10 independent scoring method(s) selected.</p>",
                 unsafe_allow_html=True,
             )
 
@@ -867,7 +938,8 @@ def render() -> None:
 
                 progress_bar.progress(1.0)
                 progress_placeholder.empty()
-                st.success(f"Analysis complete — {len(enabled_methods)} methods ran on {len(candidate_x)} features.")
+                n_ran = sum(1 for r in result.method_results if r.success)
+                st.success(f"Analysis complete — {n_ran} of {len(enabled_methods)} methods ran on {len(candidate_x)} features.")
                 st.rerun()
 
     # ------------------------------------------------------------------
@@ -883,7 +955,7 @@ def render() -> None:
         auto_top_k = min(10, n_feat)
         st.markdown(
             f"<p style='color:{_MUTED};font-size:0.88rem'>"
-            f"Will run <b style='color:#f8fafc'>{len(avail_methods)}</b> method(s) &nbsp;|&nbsp; "
+            f"Will run <b style='color:#f8fafc'>{len(avail_methods)}</b> independent scoring method(s) &nbsp;|&nbsp; "
             f"Top-K = <b style='color:#f8fafc'>{auto_top_k}</b> &nbsp;|&nbsp; "
             f"Collinearity threshold = <b style='color:#f8fafc'>0.85</b> &nbsp;|&nbsp; "
             f"VIF threshold = <b style='color:#f8fafc'>10.0</b>"
@@ -934,7 +1006,8 @@ def render() -> None:
 
             progress_bar.progress(1.0)
             progress_placeholder.empty()
-            st.success(f"Automated analysis complete — {len(avail_methods)} methods ran on {len(candidate_x)} features.")
+            n_ran = sum(1 for r in result.method_results if r.success)
+            st.success(f"Automated analysis complete — {n_ran} of {len(avail_methods)} methods ran on {len(candidate_x)} features.")
             st.rerun()
 
     # ------------------------------------------------------------------
