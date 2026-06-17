@@ -503,6 +503,15 @@ def _render_analysis_results(
                         mc3.metric("Avg |r| w/ Target", f"{corr_val:.3f}")
                     if vif_val is not None:
                         mc4.metric("VIF", f"{vif_val:.1f}")
+                    # Per-Y correlation row (only shown when > 1 Y target)
+                    if (not result.corr_with_target.empty
+                            and feat in result.corr_with_target.index
+                            and result.corr_with_target.shape[1] > 1):
+                        per_y_cols = result.corr_with_target.columns.tolist()
+                        py_cols_ui = st.columns(len(per_y_cols))
+                        for ci, y_col in enumerate(per_y_cols):
+                            r_val = result.corr_with_target.loc[feat, y_col]
+                            py_cols_ui[ci].metric(f"|r| {y_col}", f"{abs(r_val):.3f}")
                     # Score breakdown row
                     if ps_val is not None:
                         sb1, sb2, sb3, sb4 = st.columns(4)
@@ -519,18 +528,36 @@ def _render_analysis_results(
 
     with tab5:
         st.markdown("#### Per-Method Feature Rankings")
+        st.caption(
+            "Methods that train per Y target show individual raw scores alongside "
+            "the averaged raw score and normalized score. Methods that reduce to a "
+            "single averaged Y (Permutation, SHAP, RF, RFE, SFS, PCA, mRMR) show "
+            "only Avg Raw and Norm Score."
+        )
         for r in result.method_results:
             status = "✅" if r.success else "❌"
             with st.expander(f"{status} **{r.name}** — {r.category}  |  {len(r.selected_features)} features  ({r.notes})"):
                 if not r.success:
                     st.error(r.notes)
                     continue
-                rows = [
-                    {"Rank": rank, "Feature": feat,
-                     "Raw Score": round(r.raw_scores.get(feat, 0), 5),
-                     "Norm Score": round(r.all_scores.get(feat, 0), 4)}
-                    for rank, feat in enumerate(r.selected_features, 1)
-                ]
+                has_per_y = bool(r.per_target_scores)
+                if has_per_y:
+                    sample_feat = r.selected_features[0] if r.selected_features else None
+                    y_col_names = list(r.per_target_scores.get(sample_feat, {}).keys()) if sample_feat else []
+                else:
+                    y_col_names = []
+                rows = []
+                for rank, feat in enumerate(r.selected_features, 1):
+                    row_dict: dict = {
+                        "Rank": rank,
+                        "Feature": feat,
+                    }
+                    if has_per_y and y_col_names:
+                        for yc in y_col_names:
+                            row_dict[f"{yc} Raw"] = round(r.per_target_scores.get(feat, {}).get(yc, 0.0), 5)
+                    row_dict["Avg Raw"] = round(r.raw_scores.get(feat, 0), 5)
+                    row_dict["Norm Score"] = round(r.all_scores.get(feat, 0), 4)
+                    rows.append(row_dict)
                 if rows:
                     st.dataframe(pd.DataFrame(rows), use_container_width=True)
 

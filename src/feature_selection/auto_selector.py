@@ -48,6 +48,7 @@ from config.settings import (
     FS_HIGHLY_REC_MIN_FINAL,
     FS_HIGHLY_REC_MIN_PRED_STRENGTH,
     FS_HIGHLY_REC_MIN_QUALITY,
+    FS_MULTI_Y_PS_SCALE,
     FS_PS_CORR_WEIGHT,
     FS_PS_MI_WEIGHT,
     FS_PS_MRMR_WEIGHT,
@@ -219,6 +220,9 @@ class MethodResult:
     notes: str = ""
     success: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)
+    per_target_scores: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    # per_target_scores[feature][y_col] = raw score for that Y target.
+    # Empty dict when the method does not produce per-target breakdowns.
 
 
 @dataclass
@@ -392,6 +396,7 @@ def _build_result(
     top_k: int,
     notes: str = "",
     metadata: Optional[Dict] = None,
+    per_target_scores: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> MethodResult:
     scores_norm = _normalize_scores(scores_raw)
     selected = sorted(scores_raw, key=lambda f: scores_raw[f], reverse=True)[:top_k]
@@ -406,6 +411,7 @@ def _build_result(
         notes=notes,
         success=True,
         metadata=metadata or {},
+        per_target_scores=per_target_scores or {},
     )
 
 
@@ -414,23 +420,28 @@ def _build_result(
 # ---------------------------------------------------------------------------
 
 def _m_target_correlation(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int
+    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int,
+    y_names: Optional[List[str]] = None,
 ) -> MethodResult:
     try:
         y2 = _to_2d(y)
         n_t = y2.shape[1]
+        y_cols = y_names if y_names and len(y_names) == n_t else [f"Y{j+1}" for j in range(n_t)]
         raw: Dict[str, float] = {}
         signs: Dict[str, str] = {}
+        pts: Dict[str, Dict[str, float]] = {}
         for i, feat in enumerate(names):
             cors = [float(np.corrcoef(X[:, i], y2[:, j])[0, 1]) for j in range(n_t)]
             cors = [0.0 if np.isnan(c) else c for c in cors]
             raw[feat] = float(np.mean([abs(c) for c in cors]))
             pos = sum(1 for c in cors if c >= 0)
             signs[feat] = "positive" if pos >= n_t / 2 else "negative"
+            pts[feat] = {y_cols[j]: round(abs(cors[j]), 5) for j in range(n_t)}
         return _build_result(
             "target_correlation", raw, names, top_k,
             notes=f"Avg |Pearson r| with {n_t} target(s)",
             metadata={"signs": signs},
+            per_target_scores=pts,
         )
     except Exception as e:
         return _failed("target_correlation", names, top_k, str(e))
@@ -441,11 +452,13 @@ def _m_target_correlation(
 # ---------------------------------------------------------------------------
 
 def _m_f_test(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int
+    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int,
+    y_names: Optional[List[str]] = None,
 ) -> MethodResult:
     try:
         y2 = _to_2d(y)
         n_t = y2.shape[1]
+        y_cols = y_names if y_names and len(y_names) == n_t else [f"Y{j+1}" for j in range(n_t)]
         f_matrix, p_matrix = [], []
         for j in range(n_t):
             fv, pv = f_regression(X, y2[:, j])
@@ -455,10 +468,15 @@ def _m_f_test(
         avg_p = np.mean(p_matrix, axis=0)
         raw = {feat: float(avg_f[i]) for i, feat in enumerate(names)}
         p_vals = {feat: float(avg_p[i]) for i, feat in enumerate(names)}
+        pts: Dict[str, Dict[str, float]] = {
+            feat: {y_cols[j]: round(float(f_matrix[j][i]), 4) for j in range(n_t)}
+            for i, feat in enumerate(names)
+        }
         return _build_result(
             "f_test", raw, names, top_k,
             notes=f"Avg F-statistic over {n_t} target(s)",
             metadata={"p_values": p_vals},
+            per_target_scores=pts,
         )
     except Exception as e:
         return _failed("f_test", names, top_k, str(e))
@@ -469,20 +487,27 @@ def _m_f_test(
 # ---------------------------------------------------------------------------
 
 def _m_mutual_information(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int
+    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int,
+    y_names: Optional[List[str]] = None,
 ) -> MethodResult:
     try:
         y2 = _to_2d(y)
         n_t = y2.shape[1]
+        y_cols = y_names if y_names and len(y_names) == n_t else [f"Y{j+1}" for j in range(n_t)]
         mi_matrix = [
             mutual_info_regression(X, y2[:, j], random_state=42)
             for j in range(n_t)
         ]
         avg_mi = np.mean(mi_matrix, axis=0)
         raw = {feat: float(avg_mi[i]) for i, feat in enumerate(names)}
+        pts: Dict[str, Dict[str, float]] = {
+            feat: {y_cols[j]: round(float(mi_matrix[j][i]), 5) for j in range(n_t)}
+            for i, feat in enumerate(names)
+        }
         return _build_result(
             "mutual_information", raw, names, top_k,
             notes=f"Avg MI score over {n_t} target(s)",
+            per_target_scores=pts,
         )
     except Exception as e:
         return _failed("mutual_information", names, top_k, str(e))
@@ -517,14 +542,17 @@ def _m_rf_importance(
 # ---------------------------------------------------------------------------
 
 def _m_xgboost_importance(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int
+    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int,
+    y_names: Optional[List[str]] = None,
 ) -> MethodResult:
     if not _XGBOOST_AVAILABLE:
         return _failed("xgboost_importance", names, top_k, "xgboost not installed")
     try:
         y2 = _to_2d(y)
+        n_t = y2.shape[1]
+        y_cols = y_names if y_names and len(y_names) == n_t else [f"Y{j+1}" for j in range(n_t)]
         imps = []
-        for j in range(y2.shape[1]):
+        for j in range(n_t):
             m = xgb.XGBRegressor(
                 n_estimators=100, max_depth=4, random_state=42, verbosity=0
             )
@@ -532,9 +560,14 @@ def _m_xgboost_importance(
             imps.append(m.feature_importances_)
         avg_imp = np.mean(imps, axis=0)
         raw = {feat: float(avg_imp[i]) for i, feat in enumerate(names)}
+        pts: Dict[str, Dict[str, float]] = {
+            feat: {y_cols[j]: round(float(imps[j][i]), 5) for j in range(n_t)}
+            for i, feat in enumerate(names)
+        }
         return _build_result(
             "xgboost_importance", raw, names, top_k,
             notes="Gain-based importance (avg over targets)",
+            per_target_scores=pts,
         )
     except Exception as e:
         return _failed("xgboost_importance", names, top_k, str(e))
@@ -545,14 +578,17 @@ def _m_xgboost_importance(
 # ---------------------------------------------------------------------------
 
 def _m_lightgbm_importance(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int
+    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int,
+    y_names: Optional[List[str]] = None,
 ) -> MethodResult:
     if not _LIGHTGBM_AVAILABLE:
         return _failed("lightgbm_importance", names, top_k, "lightgbm not installed")
     try:
         y2 = _to_2d(y)
+        n_t = y2.shape[1]
+        y_cols = y_names if y_names and len(y_names) == n_t else [f"Y{j+1}" for j in range(n_t)]
         imps = []
-        for j in range(y2.shape[1]):
+        for j in range(n_t):
             m = lgb.LGBMRegressor(
                 n_estimators=100, num_leaves=31, random_state=42, verbose=-1
             )
@@ -560,9 +596,14 @@ def _m_lightgbm_importance(
             imps.append(m.feature_importances_.astype(float))
         avg_imp = np.mean(imps, axis=0)
         raw = {feat: float(avg_imp[i]) for i, feat in enumerate(names)}
+        pts: Dict[str, Dict[str, float]] = {
+            feat: {y_cols[j]: round(float(imps[j][i]), 4) for j in range(n_t)}
+            for i, feat in enumerate(names)
+        }
         return _build_result(
             "lightgbm_importance", raw, names, top_k,
             notes="Split-count importance (avg over targets)",
+            per_target_scores=pts,
         )
     except Exception as e:
         return _failed("lightgbm_importance", names, top_k, str(e))
@@ -573,23 +614,32 @@ def _m_lightgbm_importance(
 # ---------------------------------------------------------------------------
 
 def _m_lasso(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int
+    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int,
+    y_names: Optional[List[str]] = None,
 ) -> MethodResult:
     try:
         y2 = _to_2d(y)
         scaler = StandardScaler()
         Xs = scaler.fit_transform(X)
         n_t = y2.shape[1]
+        y_cols = y_names if y_names and len(y_names) == n_t else [f"Y{j+1}" for j in range(n_t)]
         cv = min(3, max(2, len(X) // 50))
+        pts: Dict[str, Dict[str, float]] = {}
 
         if n_t > 1:
             m = MultiTaskLassoCV(cv=cv, random_state=42, max_iter=2000)
             m.fit(Xs, y2)
-            coefs = np.abs(m.coef_).mean(axis=0)  # (n_targets, n_features) → avg
+            coef_matrix = np.abs(m.coef_)          # shape (n_targets, n_features)
+            coefs = coef_matrix.mean(axis=0)
+            pts = {
+                feat: {y_cols[j]: round(float(coef_matrix[j, i]), 5) for j in range(n_t)}
+                for i, feat in enumerate(names)
+            }
         else:
             m = LassoCV(cv=cv, random_state=42, max_iter=2000)
             m.fit(Xs, y2.ravel())
             coefs = np.abs(m.coef_)
+            pts = {feat: {y_cols[0]: round(float(coefs[i]), 5)} for i, feat in enumerate(names)}
 
         raw = {feat: float(coefs[i]) for i, feat in enumerate(names)}
         selected_mask = {feat: coefs[i] > 1e-8 for i, feat in enumerate(names)}
@@ -597,6 +647,7 @@ def _m_lasso(
             "lasso", raw, names, top_k,
             notes=f"Alpha={getattr(m, 'alpha_', '?'):.4f} (CV-selected)",
             metadata={"selected_mask": selected_mask},
+            per_target_scores=pts,
         )
     except Exception as e:
         return _failed("lasso", names, top_k, str(e))
@@ -607,23 +658,32 @@ def _m_lasso(
 # ---------------------------------------------------------------------------
 
 def _m_elasticnet(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int
+    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int,
+    y_names: Optional[List[str]] = None,
 ) -> MethodResult:
     try:
         y2 = _to_2d(y)
         scaler = StandardScaler()
         Xs = scaler.fit_transform(X)
         n_t = y2.shape[1]
+        y_cols = y_names if y_names and len(y_names) == n_t else [f"Y{j+1}" for j in range(n_t)]
         cv = min(3, max(2, len(X) // 50))
+        pts: Dict[str, Dict[str, float]] = {}
 
         if n_t > 1:
             m = MultiTaskElasticNetCV(cv=cv, random_state=42, max_iter=2000)
             m.fit(Xs, y2)
-            coefs = np.abs(m.coef_).mean(axis=0)
+            coef_matrix = np.abs(m.coef_)          # shape (n_targets, n_features)
+            coefs = coef_matrix.mean(axis=0)
+            pts = {
+                feat: {y_cols[j]: round(float(coef_matrix[j, i]), 5) for j in range(n_t)}
+                for i, feat in enumerate(names)
+            }
         else:
             m = ElasticNetCV(cv=cv, random_state=42, max_iter=2000)
             m.fit(Xs, y2.ravel())
             coefs = np.abs(m.coef_)
+            pts = {feat: {y_cols[0]: round(float(coefs[i]), 5)} for i, feat in enumerate(names)}
 
         raw = {feat: float(coefs[i]) for i, feat in enumerate(names)}
         selected_mask = {feat: coefs[i] > 1e-8 for i, feat in enumerate(names)}
@@ -631,6 +691,7 @@ def _m_elasticnet(
             "elasticnet", raw, names, top_k,
             notes=f"Alpha={getattr(m, 'alpha_', '?'):.4f} (CV-selected)",
             metadata={"selected_mask": selected_mask},
+            per_target_scores=pts,
         )
     except Exception as e:
         return _failed("elasticnet", names, top_k, str(e))
@@ -1194,27 +1255,36 @@ def _compute_stability_score(
         
 def _assign_recommendation(
     final: float, pred_strength: float, quality: float, vif: Optional[float], correlation: float,
+    n_targets: int = 1,
 ) -> str:
-    """Multi-condition recommendation assignment with quality gate."""
-    
+    """Multi-condition recommendation assignment with quality gate.
+
+    PS thresholds scale down gently with additional Y targets to compensate
+    for score compression from cross-target averaging (FS_MULTI_Y_PS_SCALE).
+    FS_WEAK_MAX_PRED_STRENGTH is intentionally not scaled — truly weak stays weak.
+    """
+    scale = 1.0 - FS_MULTI_Y_PS_SCALE * min(max(n_targets - 1, 0), 4)
+    effective_highly_rec_ps  = FS_HIGHLY_REC_MIN_PRED_STRENGTH  * scale
+    effective_recommended_ps = FS_RECOMMENDED_MIN_PRED_STRENGTH * scale
+
     vif_val = np.inf if vif is None or np.isnan(vif) else float(vif)
     if abs(correlation) < 0.05 and pred_strength < 50:
         return "Weak Feature"
 
     if (pred_strength < FS_WEAK_MAX_PRED_STRENGTH or quality < FS_WEAK_MAX_QUALITY):
         return "Weak Feature"
-    
+
     if (
         final >= FS_HIGHLY_REC_MIN_FINAL
-        and pred_strength >= FS_HIGHLY_REC_MIN_PRED_STRENGTH
+        and pred_strength >= effective_highly_rec_ps
         and quality >= FS_HIGHLY_REC_MIN_QUALITY
         and vif_val < FS_HIGHLY_REC_MAX_VIF
     ):
         return "Highly Recommended"
-    
-    if (final >= FS_RECOMMENDED_MIN_FINAL and pred_strength >= FS_RECOMMENDED_MIN_PRED_STRENGTH and quality >= FS_RECOMMENDED_MIN_QUALITY):
+
+    if (final >= FS_RECOMMENDED_MIN_FINAL and pred_strength >= effective_recommended_ps and quality >= FS_RECOMMENDED_MIN_QUALITY):
         return "Recommended"
-    
+
     if final >= FS_CONSIDER_MIN_FINAL:
         return "Consider"
 
@@ -1243,6 +1313,8 @@ def _aggregate_consensus(
     n_scoring       = len(scoring_results)
     if n_scoring == 0:
         return pd.DataFrame()
+
+    n_targets = corr_with_target.shape[1] if not corr_with_target.empty else 1
 
     # Build VIF lookup
     vif_lookup: Dict[str, float] = {}
@@ -1311,6 +1383,7 @@ def _aggregate_consensus(
             final_score, ps, fq,
             vif if not np.isnan(vif) else None,
             avg_corr if not np.isnan(avg_corr) else 0.0,
+            n_targets=n_targets,
         )
 
         # Lasso / ElasticNet selection flags
@@ -1690,19 +1763,21 @@ def run_auto_feature_selection(
             if _SHAP_AVAILABLE:
                 enabled_methods.append("shap_importance")
 
+    y_names: List[str] = y_filled.columns.tolist()
+
     # Method dispatcher
     method_dispatch = {
-        "target_correlation":   lambda: _m_target_correlation(X_vals, y_2d, names, top_k),
-        "f_test":               lambda: _m_f_test(X_vals, y_2d, names, top_k),
-        "mutual_information":   lambda: _m_mutual_information(X_vals, y_2d, names, top_k),
+        "target_correlation":   lambda: _m_target_correlation(X_vals, y_2d, names, top_k, y_names),
+        "f_test":               lambda: _m_f_test(X_vals, y_2d, names, top_k, y_names),
+        "mutual_information":   lambda: _m_mutual_information(X_vals, y_2d, names, top_k, y_names),
         "mrmr":                 lambda: _m_mrmr(X_vals, y_2d, names, top_k),
         "rf_importance":        lambda: _m_rf_importance(X_vals, y_2d, names, top_k),
-        "xgboost_importance":   lambda: _m_xgboost_importance(X_vals, y_2d, names, top_k),
-        "lightgbm_importance":  lambda: _m_lightgbm_importance(X_vals, y_2d, names, top_k),
+        "xgboost_importance":   lambda: _m_xgboost_importance(X_vals, y_2d, names, top_k, y_names),
+        "lightgbm_importance":  lambda: _m_lightgbm_importance(X_vals, y_2d, names, top_k, y_names),
         "permutation_importance": lambda: _m_permutation_importance(X_vals, y_2d, names, top_k),
         "shap_importance":      lambda: _m_shap_importance(X_vals, y_2d, names, top_k),
-        "lasso":                lambda: _m_lasso(X_vals, y_2d, names, top_k),
-        "elasticnet":           lambda: _m_elasticnet(X_vals, y_2d, names, top_k),
+        "lasso":                lambda: _m_lasso(X_vals, y_2d, names, top_k, y_names),
+        "elasticnet":           lambda: _m_elasticnet(X_vals, y_2d, names, top_k, y_names),
         "rfe":                  lambda: _m_rfe(X_vals, y_2d, names, top_k),
         "sfs_forward":          lambda: _m_sfs_forward(X_vals, y_2d, names, top_k),
         "sfs_backward":         lambda: _m_sfs_backward(X_vals, y_2d, names, top_k),

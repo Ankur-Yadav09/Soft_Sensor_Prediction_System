@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Client\\\\Desktop\\\\Soft_Sensor_Prediction_System\" -Recurse -Force)",
+      "Bash(Select-Object FullName)",
+      "Bash(Sort-Object FullName)",
+      "Bash(python -m py_compile src/feature_selection/auto_selector.py)",
+      "Bash(python -m py_compile src/ui/pages/preprocess.py)",
+      "Bash(pip install *)",
+      "Bash(python -c ' *)",
+      "Bash(python *)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\Client\\\\Desktop\\\\Soft_Sensor_Prediction_System\" -Recurse -Force | Select-Object FullName | ForEach-Object { $_.FullName.Substring\\(\"C:\\\\Users\\\\Client\\\\Desktop\\\\Soft_Sensor_Prediction_System\".Length\\) } | Sort-Object)"
+    ]
+  }
+}

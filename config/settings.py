@@ -71,14 +71,18 @@ FS_WEIGHT_FEATURE_QUALITY:      float = 0.20
 FS_WEIGHT_STABILITY:            float = 0.15
 
 # Predictive Strength sub-weights — 6 active scoring methods (sum = 1.0)
-# RF (0.10) and LGB (0.05) removed; their 0.15 redistributed proportionally
-# to XGBoost, Permutation, SHAP, and mRMR.
-FS_PS_CORR_WEIGHT:  float = 0.10
-FS_PS_MI_WEIGHT:    float = 0.15
-FS_PS_XGB_WEIGHT:   float = 0.13
-FS_PS_PERM_WEIGHT:  float = 0.31
-FS_PS_SHAP_WEIGHT:  float = 0.19
+# Corr/MI/XGB loop per target → higher weight for multi-Y reliability.
+# Perm/SHAP reduce to y_avg before scoring → lower weight to avoid dilution.
+FS_PS_CORR_WEIGHT:  float = 0.16
+FS_PS_MI_WEIGHT:    float = 0.21
+FS_PS_XGB_WEIGHT:   float = 0.16
+FS_PS_PERM_WEIGHT:  float = 0.22
+FS_PS_SHAP_WEIGHT:  float = 0.13
 FS_PS_MRMR_WEIGHT:  float = 0.12
+
+# Multi-Y threshold scaling: each extra Y target softens PS recommendation
+# thresholds by this fraction (capped at 4 extra targets = 32% max softening).
+FS_MULTI_Y_PS_SCALE: float = 0.08
 
 # Recommendation thresholds
 FS_HIGHLY_REC_MIN_FINAL:          float = 80.0
