@@ -44,7 +44,9 @@ from src.feature_selection.auto_selector import (
     METHOD_CATEGORIES,
     METHOD_LABELS,
     AutoSelectionResult,
+    PerTargetSelectionResult,
     run_auto_feature_selection,
+    run_per_target_auto_selection,
     _MAX_FEATURES_NEW,
     _XGBOOST_AVAILABLE,
     _SHAP_AVAILABLE,
@@ -957,6 +959,19 @@ def render() -> None:
                         st.session_state["_fs_y_cols"]      = auto_y_cols
                         st.session_state["_fs_top_k"]       = top_k_val
                         st.session_state["_fs_corr_thresh"] = corr_thresh_val
+                        st.session_state.pop("_fs_per_target_result", None)
+
+                        if len(auto_y_cols) > 1:
+                            _cb(f"Running per-target analysis for {len(auto_y_cols)} targets…")
+                            pt_result = run_per_target_auto_selection(
+                                X_df=X_cand, y_df=y_targ,
+                                top_k=top_k_val,
+                                enabled_methods=enabled_methods,
+                                corr_threshold=corr_thresh_val,
+                                vif_threshold=vif_thresh_val,
+                                progress_callback=_cb,
+                            )
+                            st.session_state["_fs_per_target_result"] = pt_result
                     except Exception as exc:
                         st.error(f"Analysis failed: {exc}")
                         progress_bar.empty()
@@ -1025,6 +1040,19 @@ def render() -> None:
                     st.session_state["_fs_y_cols"]      = auto_y_cols
                     st.session_state["_fs_top_k"]       = auto_top_k
                     st.session_state["_fs_corr_thresh"] = 0.85
+                    st.session_state.pop("_fs_per_target_result", None)
+
+                    if len(auto_y_cols) > 1:
+                        _auto_cb(f"Running per-target analysis for {len(auto_y_cols)} targets…")
+                        pt_result = run_per_target_auto_selection(
+                            X_df=X_cand, y_df=y_targ,
+                            top_k=auto_top_k,
+                            enabled_methods=avail_methods,
+                            corr_threshold=0.85,
+                            vif_threshold=10.0,
+                            progress_callback=_auto_cb,
+                        )
+                        st.session_state["_fs_per_target_result"] = pt_result
                 except Exception as exc:
                     st.error(f"Automated analysis failed: {exc}")
                     progress_bar.empty()
@@ -1048,26 +1076,43 @@ def render() -> None:
     res_k   = st.session_state.get("_fs_top_k", min(10, n_feat))
     c_thresh = st.session_state.get("_fs_corr_thresh", 0.85)
 
+    pt_result: Optional[PerTargetSelectionResult] = st.session_state.get("_fs_per_target_result")
+
     _step_badge(4, "Analysis Results")
-    _render_analysis_results(result, res_y, res_k, candidate_x, c_thresh, numeric_cols)
+    _render_analysis_results(result, res_y, res_k, candidate_x, c_thresh, numeric_cols, pt_result)
 
-    # Summary of selections
-    all_keep = result.recommended_features + result.optional_features
-    st.markdown(
-        f"**Highly Recommended + Recommended X ({len(result.recommended_features)}):** "
-        f"`{', '.join(result.recommended_features) or 'None'}`  \n"
-        f"**Consider X ({len(result.optional_features)}):** "
-        f"`{', '.join(result.optional_features) or 'None'}`  \n"
-        f"**Weak Feature ({len(result.features_to_remove)}):** "
-        f"`{', '.join(result.features_to_remove) or 'None'}`"
-    )
+    # Summary of selections — for multi-Y, prefer union-based counts
+    if pt_result is not None:
+        union_rec   = pt_result.union_features
+        union_opt   = pt_result.optional_union
+        all_keep    = union_rec + union_opt
+        st.markdown(
+            f"**Union Recommended X — {len(union_rec)} features** "
+            f"(union across all {len(res_y)} targets):  \n"
+            f"`{', '.join(union_rec) or 'None'}`  \n"
+            f"**Union Consider X ({len(union_opt)}):** "
+            f"`{', '.join(union_opt) or 'None'}`  \n"
+            f"**Combined-run Weak Features ({len(result.features_to_remove)}):** "
+            f"`{', '.join(result.features_to_remove) or 'None'}`"
+        )
+    else:
+        all_keep = result.recommended_features + result.optional_features
+        st.markdown(
+            f"**Highly Recommended + Recommended X ({len(result.recommended_features)}):** "
+            f"`{', '.join(result.recommended_features) or 'None'}`  \n"
+            f"**Consider X ({len(result.optional_features)}):** "
+            f"`{', '.join(result.optional_features) or 'None'}`  \n"
+            f"**Weak Feature ({len(result.features_to_remove)}):** "
+            f"`{', '.join(result.features_to_remove) or 'None'}`"
+        )
 
-    # Quick-apply buttons before manual selection
+    # Quick-apply buttons — for multi-Y use union; for single-Y use combined result
+    rec_features = pt_result.union_features if pt_result else result.recommended_features
     qa1, qa2, qa3, qa4 = st.columns(4)
     with qa1:
-        if st.button(f"✅ Use Recommended ({len(result.recommended_features)})", key="fs_qa_rec"):
-            _sync_checkboxes(result.recommended_features, res_y, numeric_cols)
-            st.session_state["_fs_suggested_x"] = result.recommended_features
+        if st.button(f"✅ Use Recommended ({len(rec_features)})", key="fs_qa_rec"):
+            _sync_checkboxes(rec_features, res_y, numeric_cols)
+            st.session_state["_fs_suggested_x"] = rec_features
             st.rerun()
     with qa2:
         if st.button(f"⭐ Use Rec + Optional ({len(all_keep)})", key="fs_qa_all_keep"):
@@ -1076,7 +1121,8 @@ def render() -> None:
             st.rerun()
     with qa3:
         if st.button("🗑️ Clear Results", key="fs_clear"):
-            for k in ["_fs_result", "_fs_y_cols", "_fs_top_k", "_fs_corr_thresh", "_fs_suggested_x"]:
+            for k in ["_fs_result", "_fs_y_cols", "_fs_top_k", "_fs_corr_thresh",
+                      "_fs_suggested_x", "_fs_per_target_result"]:
                 st.session_state.pop(k, None)
             st.rerun()
     with qa4:
@@ -1087,7 +1133,7 @@ def render() -> None:
     # ------------------------------------------------------------------
     # Manual Variable Selection  (auto-filled from results)
     # ------------------------------------------------------------------
-    suggested_x = st.session_state.get("_fs_suggested_x", result.recommended_features)
+    suggested_x = st.session_state.get("_fs_suggested_x", rec_features)
     suggested_y = res_y
 
     x_cols, y_cols = _render_manual_variable_selection(suggested_x, suggested_y, numeric_cols)

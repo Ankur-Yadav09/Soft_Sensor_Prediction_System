@@ -239,6 +239,18 @@ class AutoSelectionResult:
     per_feature_reasoning: Dict[str, str]
 
 
+@dataclass
+class PerTargetSelectionResult:
+    """Result of running feature selection independently for each Y target."""
+    target_results: Dict[str, AutoSelectionResult]
+    # union of Highly Recommended + Recommended across ALL targets (sorted by coverage desc)
+    union_features: List[str]
+    # union of Consider features NOT already in union_features
+    optional_union: List[str]
+    # feature → list of Y target names it was recommended for
+    feature_target_map: Dict[str, List[str]]
+
+
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
@@ -1839,4 +1851,94 @@ def run_auto_feature_selection(
         optional_features=optional,
         features_to_remove=to_remove,
         per_feature_reasoning=reasoning,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-target orchestration
+# ---------------------------------------------------------------------------
+
+def run_per_target_auto_selection(
+    X_df: pd.DataFrame,
+    y_df: pd.DataFrame,
+    top_k: int = 10,
+    enabled_methods: Optional[List[str]] = None,
+    corr_threshold: float = 0.85,
+    vif_threshold: float = 10.0,
+    progress_callback=None,
+) -> PerTargetSelectionResult:
+    """
+    Run the full feature selection pipeline independently for each Y target,
+    then build a union-based final feature pool.
+
+    For single-Y datasets this is equivalent to one regular run.
+    For multi-Y datasets each target is evaluated in isolation, preventing
+    target-specific features from being averaged away.
+
+    Parameters
+    ----------
+    X_df, y_df            : same contract as run_auto_feature_selection
+    top_k                 : top-K passed to each per-target run
+    enabled_methods       : method list passed to each per-target run
+    corr_threshold        : passed to each per-target run
+    vif_threshold         : passed to each per-target run
+    progress_callback     : optional callable(step: str) for outer progress
+
+    Returns
+    -------
+    PerTargetSelectionResult
+    """
+    def _progress(msg: str) -> None:
+        if progress_callback:
+            progress_callback(msg)
+
+    y_cols = y_df.columns.tolist()
+    n_targets = len(y_cols)
+    target_results: Dict[str, AutoSelectionResult] = {}
+
+    for i, y_col in enumerate(y_cols):
+        _progress(f"[{i + 1}/{n_targets}] Feature selection for target '{y_col}'…")
+        result = run_auto_feature_selection(
+            X_df=X_df,
+            y_df=y_df[[y_col]],
+            top_k=top_k,
+            enabled_methods=enabled_methods,
+            corr_threshold=corr_threshold,
+            vif_threshold=vif_threshold,
+            progress_callback=None,  # suppress per-step messages inside each sub-run
+        )
+        target_results[y_col] = result
+
+    # Build feature → [target names] map from Highly Recommended + Recommended
+    feature_target_map: Dict[str, List[str]] = {}
+    for y_col, res in target_results.items():
+        for feat in res.recommended_features:
+            feature_target_map.setdefault(feat, []).append(y_col)
+
+    # Consider features not already in the recommended union
+    optional_map: Dict[str, List[str]] = {}
+    for y_col, res in target_results.items():
+        for feat in res.optional_features:
+            if feat not in feature_target_map:
+                optional_map.setdefault(feat, []).append(y_col)
+                feature_target_map.setdefault(feat, []).append(y_col)
+
+    # Sort by coverage (features recommended by the most targets first)
+    union_features = sorted(
+        [f for f in feature_target_map if f not in optional_map],
+        key=lambda f: len(feature_target_map[f]),
+        reverse=True,
+    )
+    optional_union = sorted(
+        optional_map.keys(),
+        key=lambda f: len(optional_map[f]),
+        reverse=True,
+    )
+
+    _progress("Per-target selection complete.")
+    return PerTargetSelectionResult(
+        target_results=target_results,
+        union_features=union_features,
+        optional_union=optional_union,
+        feature_target_map=feature_target_map,
     )
