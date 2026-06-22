@@ -25,7 +25,7 @@ Final  : Fallback imputation + Apply Preprocessing & Split Dataset
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -347,6 +347,7 @@ def _render_analysis_results(
     candidate_x: List[str],
     corr_thresh: float,
     numeric_cols: List[str],
+    pt_result: Optional[PerTargetSelectionResult] = None,
 ) -> None:
     cdf  = result.consensus_df
     info = result.dataset_info
@@ -370,13 +371,18 @@ def _render_analysis_results(
     kc4.metric("🟡 Consider",           n_opt)
     kc5.metric("🔴 Weak Feature",       n_rem)
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab_labels = [
         "📊 Overview",
         "🏆 Consensus Rankings",
         "📈 Visualizations",
         "🎯 Recommendations",
         "🔬 Method Details",
-    ])
+    ]
+    if pt_result is not None:
+        tab_labels.append("📋 Per-Target Summary")
+    tabs = st.tabs(tab_labels)
+    tab1, tab2, tab3, tab4, tab5 = tabs[:5]
+    tab6 = tabs[5] if len(tabs) > 5 else None
 
     with tab1:
         st.markdown("#### Dataset Quality Report")
@@ -525,6 +531,17 @@ def _render_analysis_results(
                         if avg_rank_val is not None:
                             rank_label = "Top Ranked" if avg_rank_val <= 3 else ("Mid Ranked" if avg_rank_val <= 7 else "Lower Ranked")
                             sb4.metric("Avg Rank", f"{avg_rank_val:.1f}", help=rank_label)
+                    if pt_result is not None and feat in pt_result.feature_target_map:
+                        targets_for_feat = pt_result.feature_target_map[feat]
+                        n_total_targets = len(pt_result.target_results)
+                        st.markdown(
+                            f"<span style='background:#1e3a5f;color:#60a5fa;padding:3px 10px;"
+                            f"border-radius:6px;font-size:0.82rem;font-weight:600'>"
+                            f"Selected for: {', '.join(targets_for_feat)} &nbsp;"
+                            f"({len(targets_for_feat)}/{n_total_targets} targets)</span>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown("")
                     st.markdown(result.per_feature_reasoning.get(feat, ""))
                     st.markdown("---")
 
@@ -562,6 +579,71 @@ def _render_analysis_results(
                     rows.append(row_dict)
                 if rows:
                     st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+    if tab6 is not None and pt_result is not None:
+        with tab6:
+            st.markdown("#### Target-wise Feature Selection Summary")
+            st.caption(
+                "Shows which Y targets each feature was selected for (Highly Recommended or "
+                "Recommended) when running feature selection independently per target. "
+                "Features are sorted by coverage (most targets first)."
+            )
+
+            n_targets = len(pt_result.target_results)
+            target_names = list(pt_result.target_results.keys())
+
+            # Build summary rows
+            summary_rows = []
+            for feat in pt_result.union_features:
+                selected_for = pt_result.feature_target_map.get(feat, [])
+                row: dict = {"Feature": feat}
+                for t in target_names:
+                    row[t] = "✅" if t in selected_for else "—"
+                row["Coverage"] = f"{len(selected_for)}/{n_targets}"
+                # Overall recommendation from consensus result
+                if feat in cdf["Feature"].values:
+                    rec = cdf.loc[cdf["Feature"] == feat, "Recommendation"].values[0]
+                else:
+                    rec = "—"
+                row["Consensus Rec"] = rec
+                summary_rows.append(row)
+
+            # Also show features that were only in optional_union
+            for feat in pt_result.optional_union:
+                if feat in [r["Feature"] for r in summary_rows]:
+                    continue
+                selected_for = pt_result.feature_target_map.get(feat, [])
+                row = {"Feature": feat}
+                for t in target_names:
+                    row[t] = "○" if t in selected_for else "—"
+                row["Coverage"] = f"{len(selected_for)}/{n_targets} (optional)"
+                if feat in cdf["Feature"].values:
+                    rec = cdf.loc[cdf["Feature"] == feat, "Recommendation"].values[0]
+                else:
+                    rec = "—"
+                row["Consensus Rec"] = rec
+                summary_rows.append(row)
+
+            if summary_rows:
+                summary_df = pd.DataFrame(summary_rows)
+                st.dataframe(summary_df, use_container_width=True, height=420)
+                st.caption(
+                    "✅ = selected (Highly Recommended / Recommended for that target) &nbsp;|&nbsp; "
+                    "○ = optional/consider &nbsp;|&nbsp; — = not selected"
+                )
+
+            st.markdown("#### Per-Target Recommendation Counts")
+            count_rows = []
+            for t, t_res in pt_result.target_results.items():
+                t_cdf = t_res.consensus_df
+                count_rows.append({
+                    "Target": t,
+                    "Highly Recommended": sum(1 for v in t_cdf["Recommendation"] if v == "Highly Recommended"),
+                    "Recommended":        sum(1 for v in t_cdf["Recommendation"] if v == "Recommended"),
+                    "Consider":           sum(1 for v in t_cdf["Recommendation"] if v in ("Consider", "Optional")),
+                    "Weak Feature":       sum(1 for v in t_cdf["Recommendation"] if v in ("Weak Feature", "Remove")),
+                })
+            st.dataframe(pd.DataFrame(count_rows), use_container_width=True)
 
     st.markdown("---")
 
