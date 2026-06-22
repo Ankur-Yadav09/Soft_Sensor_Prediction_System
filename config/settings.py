@@ -106,9 +106,6 @@ FS_STABILITY_RUNS:       int   = 20
 FS_STABILITY_SAMPLE_FRAC: float = 0.80
 FS_STABILITY_MAX_ROWS:   int   = 3000
 
-# SHAP row cap
-FS_SHAP_MAX_ROWS: int = 1000
-
 # ---------------------------------------------------------------------------
 # Evaluation / grading thresholds
 # ---------------------------------------------------------------------------

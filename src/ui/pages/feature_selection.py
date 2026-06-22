@@ -39,8 +39,6 @@ from src.data.preprocessing import (
     split_and_scale,
 )
 from src.feature_selection.auto_selector import (
-    ALL_METHOD_IDS,
-    INFORMATIONAL_METHOD_IDS,
     METHOD_CATEGORIES,
     METHOD_LABELS,
     AutoSelectionResult,
@@ -48,8 +46,6 @@ from src.feature_selection.auto_selector import (
     run_auto_feature_selection,
     run_per_target_auto_selection,
     _MAX_FEATURES_NEW,
-    _XGBOOST_AVAILABLE,
-    _SHAP_AVAILABLE,
 )
 
 # ---------------------------------------------------------------------------
@@ -202,18 +198,13 @@ def _plot_ranking_matrix(
 
     # --- method order (scoring methods only, those that ran) ---
     METHOD_ORDER = [
-        ("target_correlation",    "Correlation"),
-        ("f_test",                "F-Test"),
-        ("mutual_information",    "Mut. Info"),
-        ("mrmr",                  "mRMR"),
-        ("xgboost_importance",    "XGBoost"),
-        ("shap_importance",       "SHAP"),
-        ("permutation_importance","Permutation"),
-        ("rfe",                   "RFE"),
-        ("lasso",                 "Lasso"),
-        ("elasticnet",            "ElasticNet"),
+        ("target_correlation",     "Correlation"),
+        ("mutual_information",     "Mut. Info"),
+        ("mrmr",                   "mRMR"),
+        ("permutation_importance", "Permutation"),
+        ("elasticnet",             "ElasticNet"),
     ]
-    SELECTION_METHODS = {"lasso", "elasticnet"}
+    SELECTION_METHODS = {"elasticnet"}
 
     ran = {r.method_id: r for r in method_results if r.success}
     active = [(mid, lbl) for mid, lbl in METHOD_ORDER if mid in ran]
@@ -307,33 +298,30 @@ def _plot_ranking_matrix(
 # Build default method list
 # ---------------------------------------------------------------------------
 
-def _build_default_methods(n_feat: int) -> List[str]:
-    """Return the 10 independent scoring methods enabled by default."""
-    defaults = [
-        "target_correlation", "f_test", "mutual_information",
-        "mrmr", "lasso", "elasticnet", "rfe",
-    ]
-    if _XGBOOST_AVAILABLE:
-        defaults.append("xgboost_importance")
-    if n_feat <= _MAX_FEATURES_NEW:
-        defaults.append("permutation_importance")
-        if _SHAP_AVAILABLE:
-            defaults.append("shap_importance")
-    return defaults
+# Fixed ordered list of the 5 core scoring methods (no optional libraries needed)
+_CORE_METHOD_ORDER = [
+    "target_correlation",
+    "mutual_information",
+    "mrmr",
+    "permutation_importance",
+    "elasticnet",
+]
 
 
 def _build_available_methods() -> List[str]:
-    """Return scoring methods available for user selection (informational methods excluded)."""
-    avail = []
-    for mid in ALL_METHOD_IDS:
-        if mid in INFORMATIONAL_METHOD_IDS:
-            continue  # always run automatically; not user-selectable
-        if mid == "xgboost_importance" and not _XGBOOST_AVAILABLE:
-            continue
-        if mid == "shap_importance" and not _SHAP_AVAILABLE:
-            continue
-        avail.append(mid)
-    return avail
+    """Return the 5 core scoring methods available for user selection."""
+    return list(_CORE_METHOD_ORDER)
+
+
+def _build_default_methods(n_feat: int) -> List[str]:
+    """Return the 5 core scoring methods enabled by default.
+
+    Permutation Importance is skipped when n_feat exceeds the performance guard
+    threshold (_MAX_FEATURES_NEW) to avoid excessive runtime on wide datasets.
+    """
+    if n_feat > _MAX_FEATURES_NEW:
+        return [m for m in _CORE_METHOD_ORDER if m != "permutation_importance"]
+    return list(_CORE_METHOD_ORDER)
 
 
 # ---------------------------------------------------------------------------
@@ -436,8 +424,8 @@ def _render_analysis_results(
         base_cols = [
             "Feature", "SelectionCount", "TotalMethods", "SelectionFreq",
             "AvgRank", "PredictiveStrength", "FeatureQuality", "StabilityScore", "FinalScore",
-            "CorrWithTarget", "VIF", "PValue",
-            "LassoSelected", "ElasticNetSelected", "Recommendation",
+            "CorrWithTarget", "VIF",
+            "ElasticNetSelected", "Recommendation",
         ]
         available_cols = [c for c in base_cols if c in cdf.columns]
         disp_df = cdf.reset_index()[available_cols] if "Rank" not in cdf.columns else cdf[available_cols]
@@ -550,8 +538,7 @@ def _render_analysis_results(
         st.caption(
             "Methods that train per Y target show individual raw scores alongside "
             "the averaged raw score and normalized score. Methods that reduce to a "
-            "single averaged Y (Permutation, SHAP, RF, RFE, SFS, PCA, mRMR) show "
-            "only Avg Raw and Norm Score."
+            "single averaged Y (Permutation, mRMR) show only Avg Raw and Norm Score."
         )
         for r in result.method_results:
             status = "✅" if r.success else "❌"
@@ -980,17 +967,12 @@ def render() -> None:
                 )
 
         with tab_methods:
-            _section_header("📋", "Methods Selection", "Enable / disable the 10 independent scoring methods.")
-
-            if not _XGBOOST_AVAILABLE:
-                st.caption(f"⚠️ {METHOD_LABELS['xgboost_importance']} — install `xgboost` to enable")
-            if not _SHAP_AVAILABLE:
-                st.caption(f"⚠️ {METHOD_LABELS['shap_importance']} — install `shap` to enable")
+            _section_header("📋", "Methods Selection", "Enable / disable the 5 core scoring methods.")
 
             enabled_methods = _method_checkboxes(avail_methods, default_methods)
             st.markdown(
                 f"<p style='color:{_MUTED};font-size:0.85rem'><b style='color:#f8fafc'>"
-                f"{len(enabled_methods)}</b> of 10 independent scoring method(s) selected.</p>",
+                f"{len(enabled_methods)}</b> of 5 core scoring method(s) selected.</p>",
                 unsafe_allow_html=True,
             )
 

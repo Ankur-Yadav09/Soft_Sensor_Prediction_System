@@ -34,16 +34,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.feature_selection import RFE, f_regression, mutual_info_regression
+from sklearn.feature_selection import mutual_info_regression
 from sklearn.inspection import permutation_importance as _sklearn_perm_importance
 from sklearn.linear_model import (
     ElasticNetCV,
-    LassoCV,
-    LinearRegression,
     MultiTaskElasticNetCV,
-    MultiTaskLassoCV,
     Ridge,
 )
 from sklearn.preprocessing import StandardScaler
@@ -64,7 +60,6 @@ from config.settings import (
     FS_RECOMMENDED_MIN_PRED_STRENGTH,
     FS_RECOMMENDED_MIN_QUALITY,
     FS_CONSIDER_MIN_FINAL,
-    FS_SHAP_MAX_ROWS,
     FS_STABILITY_MAX_ROWS,
     FS_STABILITY_RUNS,
     FS_STABILITY_SAMPLE_FRAC,
@@ -79,61 +74,23 @@ from config.settings import (
 warnings.filterwarnings("ignore")
 
 # ---------------------------------------------------------------------------
-# Optional packages
-# ---------------------------------------------------------------------------
-try:
-    from sklearn.feature_selection import SequentialFeatureSelector as _SFS
-    _SFS_AVAILABLE = True
-except ImportError:
-    _SFS_AVAILABLE = False
-
-try:
-    import xgboost as xgb
-    _XGBOOST_AVAILABLE = True
-except ImportError:
-    _XGBOOST_AVAILABLE = False
-
-try:
-    import lightgbm as lgb
-    _LIGHTGBM_AVAILABLE = True
-except ImportError:
-    _LIGHTGBM_AVAILABLE = False
-
-try:
-    import shap as _shap
-    _SHAP_AVAILABLE = True
-except ImportError:
-    _SHAP_AVAILABLE = False
-
-# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 _VIF_HIGH     = 10.0
 _VIF_MODERATE =  5.0
 
-_MAX_ROWS_WRAPPER    = 5_000   # rows sampled for RFE / SFS
-_MAX_FEATURES_SFS    =   50    # skip SFS-forward if more features
-_MAX_FEATURES_SFS_BK =   30    # skip SFS-backward if more features
-_MAX_FEATURES_VIF    =   80    # skip VIF if more features
-_MAX_FEATURES_NEW    =  100    # skip permutation/SHAP if more features
+_MAX_ROWS_WRAPPER = 5_000   # rows sampled for permutation importance
+_MAX_FEATURES_VIF =    80   # skip VIF computation if more features (performance)
+_MAX_FEATURES_NEW =   100   # skip permutation importance if more features (performance)
 
-# Available method IDs (used as keys throughout)
+# Active method IDs — 5 scoring methods plus rf_importance (internal stability use only)
 ALL_METHOD_IDS = [
     "target_correlation",
-    "f_test",
     "mutual_information",
     "mrmr",
-    "rf_importance",
-    "xgboost_importance",
-    "lightgbm_importance",
     "permutation_importance",
-    "shap_importance",
-    "lasso",
     "elasticnet",
-    "rfe",
-    "sfs_forward",
-    "sfs_backward",
-    "pca_analysis",
+    "rf_importance",   # internal only: called directly from _compute_stability_score
 ]
 
 # The 5 core methods that drive SelectionFrequency, PredictiveStrength, and
@@ -148,60 +105,28 @@ _SCORING_METHOD_IDS: frozenset = frozenset([
     "elasticnet",               # Intrinsic: L1+L2 regularisation coefficient magnitude
 ])
 
-# Methods excluded from scoring — they do not affect SelectionFreq, PS, or FinalScore.
-# Includes both the legacy informational methods and the demoted methods (f_test,
-# xgboost_importance, shap_importance, rfe, lasso) that were removed from scoring.
-# They can still be passed in enabled_methods for supplementary output, but their
-# results will not be counted in the consensus or Predictive Strength calculation.
+# rf_importance is the only remaining informational method — it runs inside
+# _compute_stability_score but never appears in the user-facing method list.
 INFORMATIONAL_METHOD_IDS: frozenset = frozenset([
-    # Legacy informational (never scored)
     "rf_importance",
-    "lightgbm_importance",
-    "sfs_forward",
-    "sfs_backward",
-    "pca_analysis",
-    # Demoted from scoring — kept for optional supplementary analysis
-    "f_test",
-    "xgboost_importance",
-    "shap_importance",
-    "rfe",
-    "lasso",
 ])
 
 METHOD_LABELS: Dict[str, str] = {
-    "target_correlation":    "Target Correlation",
-    "f_test":                "F-Test (ANOVA)",
-    "mutual_information":    "Mutual Information",
-    "mrmr":                  "mRMR",
-    "rf_importance":         "Random Forest Importance (Informational)",
-    "xgboost_importance":    "XGBoost Importance",
-    "lightgbm_importance":   "LightGBM Importance (Informational)",
-    "permutation_importance":"Permutation Importance",
-    "shap_importance":       "SHAP Importance",
-    "lasso":                 "Lasso Regression",
-    "elasticnet":            "Elastic Net",
-    "rfe":                   "Recursive Feature Elimination",
-    "sfs_forward":           "Sequential Forward Selection (Informational)",
-    "sfs_backward":          "Sequential Backward Selection (Informational)",
-    "pca_analysis":          "PCA Loadings Analysis (Informational)",
+    "target_correlation":     "Target Correlation",
+    "mutual_information":     "Mutual Information",
+    "mrmr":                   "mRMR",
+    "permutation_importance": "Permutation Importance",
+    "elasticnet":             "Elastic Net",
+    "rf_importance":          "Random Forest Importance",  # internal; stability only
 }
 
 METHOD_CATEGORIES: Dict[str, str] = {
-    "target_correlation":    "Supervised",
-    "f_test":                "Supervised",
-    "mutual_information":    "Supervised",
-    "mrmr":                  "Advanced Filter",
-    "rf_importance":         "Feature Importance",
-    "xgboost_importance":    "Feature Importance",
-    "lightgbm_importance":   "Feature Importance",
-    "permutation_importance":"Feature Importance",
-    "shap_importance":       "Feature Importance",
-    "lasso":                 "Intrinsic",
-    "elasticnet":            "Intrinsic",
-    "rfe":                   "Wrapper",
-    "sfs_forward":           "Wrapper",
-    "sfs_backward":          "Wrapper",
-    "pca_analysis":          "Dimensionality Reduction",
+    "target_correlation":     "Supervised",
+    "mutual_information":     "Supervised",
+    "mrmr":                   "Advanced Filter",
+    "permutation_importance": "Feature Importance",
+    "elasticnet":             "Intrinsic",
+    "rf_importance":          "Feature Importance",  # internal; stability only
 }
 
 # Per-method contribution weights for the Predictive Strength composite score.
@@ -474,42 +399,7 @@ def _m_target_correlation(
 
 
 # ---------------------------------------------------------------------------
-# Method 2 – F-Test ANOVA (Supervised)
-# ---------------------------------------------------------------------------
-
-def _m_f_test(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int,
-    y_names: Optional[List[str]] = None,
-) -> MethodResult:
-    try:
-        y2 = _to_2d(y)
-        n_t = y2.shape[1]
-        y_cols = y_names if y_names and len(y_names) == n_t else [f"Y{j+1}" for j in range(n_t)]
-        f_matrix, p_matrix = [], []
-        for j in range(n_t):
-            fv, pv = f_regression(X, y2[:, j])
-            f_matrix.append(np.nan_to_num(fv, nan=0.0))
-            p_matrix.append(np.nan_to_num(pv, nan=1.0))
-        avg_f = np.mean(f_matrix, axis=0)
-        avg_p = np.mean(p_matrix, axis=0)
-        raw = {feat: float(avg_f[i]) for i, feat in enumerate(names)}
-        p_vals = {feat: float(avg_p[i]) for i, feat in enumerate(names)}
-        pts: Dict[str, Dict[str, float]] = {
-            feat: {y_cols[j]: round(float(f_matrix[j][i]), 4) for j in range(n_t)}
-            for i, feat in enumerate(names)
-        }
-        return _build_result(
-            "f_test", raw, names, top_k,
-            notes=f"Avg F-statistic over {n_t} target(s)",
-            metadata={"p_values": p_vals},
-            per_target_scores=pts,
-        )
-    except Exception as e:
-        return _failed("f_test", names, top_k, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Method 3 – Mutual Information (Supervised)
+# Method 2 – Mutual Information (Supervised)
 # ---------------------------------------------------------------------------
 
 def _m_mutual_information(
@@ -564,123 +454,7 @@ def _m_rf_importance(
 
 
 # ---------------------------------------------------------------------------
-# Method 5 – XGBoost Importance (optional)
-# ---------------------------------------------------------------------------
-
-def _m_xgboost_importance(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int,
-    y_names: Optional[List[str]] = None,
-) -> MethodResult:
-    if not _XGBOOST_AVAILABLE:
-        return _failed("xgboost_importance", names, top_k, "xgboost not installed")
-    try:
-        y2 = _to_2d(y)
-        n_t = y2.shape[1]
-        y_cols = y_names if y_names and len(y_names) == n_t else [f"Y{j+1}" for j in range(n_t)]
-        imps = []
-        for j in range(n_t):
-            m = xgb.XGBRegressor(
-                n_estimators=100, max_depth=4, random_state=42, verbosity=0
-            )
-            m.fit(X, y2[:, j])
-            imps.append(m.feature_importances_)
-        avg_imp = np.mean(imps, axis=0)
-        raw = {feat: float(avg_imp[i]) for i, feat in enumerate(names)}
-        pts: Dict[str, Dict[str, float]] = {
-            feat: {y_cols[j]: round(float(imps[j][i]), 5) for j in range(n_t)}
-            for i, feat in enumerate(names)
-        }
-        return _build_result(
-            "xgboost_importance", raw, names, top_k,
-            notes="Gain-based importance (avg over targets)",
-            per_target_scores=pts,
-        )
-    except Exception as e:
-        return _failed("xgboost_importance", names, top_k, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Method 6 – LightGBM Importance (optional)
-# ---------------------------------------------------------------------------
-
-def _m_lightgbm_importance(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int,
-    y_names: Optional[List[str]] = None,
-) -> MethodResult:
-    if not _LIGHTGBM_AVAILABLE:
-        return _failed("lightgbm_importance", names, top_k, "lightgbm not installed")
-    try:
-        y2 = _to_2d(y)
-        n_t = y2.shape[1]
-        y_cols = y_names if y_names and len(y_names) == n_t else [f"Y{j+1}" for j in range(n_t)]
-        imps = []
-        for j in range(n_t):
-            m = lgb.LGBMRegressor(
-                n_estimators=100, num_leaves=31, random_state=42, verbose=-1
-            )
-            m.fit(X, y2[:, j])
-            imps.append(m.feature_importances_.astype(float))
-        avg_imp = np.mean(imps, axis=0)
-        raw = {feat: float(avg_imp[i]) for i, feat in enumerate(names)}
-        pts: Dict[str, Dict[str, float]] = {
-            feat: {y_cols[j]: round(float(imps[j][i]), 4) for j in range(n_t)}
-            for i, feat in enumerate(names)
-        }
-        return _build_result(
-            "lightgbm_importance", raw, names, top_k,
-            notes="Split-count importance (avg over targets)",
-            per_target_scores=pts,
-        )
-    except Exception as e:
-        return _failed("lightgbm_importance", names, top_k, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Method 7 – Lasso (Intrinsic)
-# ---------------------------------------------------------------------------
-
-def _m_lasso(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int,
-    y_names: Optional[List[str]] = None,
-) -> MethodResult:
-    try:
-        y2 = _to_2d(y)
-        scaler = StandardScaler()
-        Xs = scaler.fit_transform(X)
-        n_t = y2.shape[1]
-        y_cols = y_names if y_names and len(y_names) == n_t else [f"Y{j+1}" for j in range(n_t)]
-        cv = min(3, max(2, len(X) // 50))
-        pts: Dict[str, Dict[str, float]] = {}
-
-        if n_t > 1:
-            m = MultiTaskLassoCV(cv=cv, random_state=42, max_iter=2000)
-            m.fit(Xs, y2)
-            coef_matrix = np.abs(m.coef_)          # shape (n_targets, n_features)
-            coefs = coef_matrix.mean(axis=0)
-            pts = {
-                feat: {y_cols[j]: round(float(coef_matrix[j, i]), 5) for j in range(n_t)}
-                for i, feat in enumerate(names)
-            }
-        else:
-            m = LassoCV(cv=cv, random_state=42, max_iter=2000)
-            m.fit(Xs, y2.ravel())
-            coefs = np.abs(m.coef_)
-            pts = {feat: {y_cols[0]: round(float(coefs[i]), 5)} for i, feat in enumerate(names)}
-
-        raw = {feat: float(coefs[i]) for i, feat in enumerate(names)}
-        selected_mask = {feat: coefs[i] > 1e-8 for i, feat in enumerate(names)}
-        return _build_result(
-            "lasso", raw, names, top_k,
-            notes=f"Alpha={getattr(m, 'alpha_', '?'):.4f} (CV-selected)",
-            metadata={"selected_mask": selected_mask},
-            per_target_scores=pts,
-        )
-    except Exception as e:
-        return _failed("lasso", names, top_k, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Method 8 – Elastic Net (Intrinsic)
+# Method 5 – Elastic Net (Intrinsic)
 # ---------------------------------------------------------------------------
 
 def _m_elasticnet(
@@ -724,157 +498,7 @@ def _m_elasticnet(
 
 
 # ---------------------------------------------------------------------------
-# Method 9 – Recursive Feature Elimination (Wrapper)
-# ---------------------------------------------------------------------------
-
-def _m_rfe(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int
-) -> MethodResult:
-    try:
-        y2 = _to_2d(y)
-        Xs, ys = _sample(X, y2, _MAX_ROWS_WRAPPER)
-        scaler = StandardScaler()
-        Xss = scaler.fit_transform(Xs)
-        k_sel = min(top_k, len(names))
-
-        rfe = RFE(LinearRegression(), n_features_to_select=k_sel, step=1)
-        rfe.fit(Xss, ys if ys.shape[1] > 1 else ys.ravel())
-
-        # ranking_: 1 = selected, higher = eliminated earlier
-        max_rank = int(rfe.ranking_.max())
-        raw = {feat: float(max_rank - rfe.ranking_[i] + 1) for i, feat in enumerate(names)}
-        selected_names = [names[i] for i, s in enumerate(rfe.support_) if s]
-        return _build_result(
-            "rfe", raw, names, top_k,
-            notes=f"LinearRegression base, k={k_sel}",
-            metadata={"support": {names[i]: bool(rfe.support_[i]) for i in range(len(names))}},
-        )
-    except Exception as e:
-        return _failed("rfe", names, top_k, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Method 10 – Sequential Forward Selection (Wrapper)
-# ---------------------------------------------------------------------------
-
-def _m_sfs_forward(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int
-) -> MethodResult:
-    if not _SFS_AVAILABLE:
-        return _failed("sfs_forward", names, top_k, "SequentialFeatureSelector not available (upgrade sklearn)")
-    if len(names) > _MAX_FEATURES_SFS:
-        return _failed("sfs_forward", names, top_k, f"Skipped: > {_MAX_FEATURES_SFS} features (performance limit)")
-    try:
-        y2 = _to_2d(y)
-        Xs, ys = _sample(X, y2, _MAX_ROWS_WRAPPER)
-        scaler = StandardScaler()
-        Xss = scaler.fit_transform(Xs)
-        k_sel = min(top_k, len(names) - 1)
-        cv = min(3, max(2, len(Xss) // 50))
-
-        sfs = _SFS(
-            LinearRegression(), n_features_to_select=k_sel,
-            direction="forward", scoring="r2", cv=cv,
-        )
-        sfs.fit(Xss, ys.ravel() if ys.shape[1] == 1 else ys)
-
-        selected_mask = sfs.get_support()
-        # Score selected features by their correlation with avg(y) (tiebreaker)
-        y_avg = ys.mean(axis=1)
-        raw: Dict[str, float] = {}
-        for i, feat in enumerate(names):
-            if selected_mask[i]:
-                r = float(np.corrcoef(Xss[:, i], y_avg)[0, 1])
-                raw[feat] = abs(r) if not np.isnan(r) else 0.0
-            else:
-                raw[feat] = 0.0
-        return _build_result(
-            "sfs_forward", raw, names, top_k,
-            notes=f"Forward greedy, k={k_sel}, cv={cv}",
-            metadata={"support": {names[i]: bool(selected_mask[i]) for i in range(len(names))}},
-        )
-    except Exception as e:
-        return _failed("sfs_forward", names, top_k, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Method 11 – Sequential Backward Selection (Wrapper, conditional)
-# ---------------------------------------------------------------------------
-
-def _m_sfs_backward(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int
-) -> MethodResult:
-    if not _SFS_AVAILABLE:
-        return _failed("sfs_backward", names, top_k, "SequentialFeatureSelector not available")
-    if len(names) > _MAX_FEATURES_SFS_BK:
-        return _failed("sfs_backward", names, top_k, f"Skipped: > {_MAX_FEATURES_SFS_BK} features (performance limit)")
-    try:
-        y2 = _to_2d(y)
-        Xs, ys = _sample(X, y2, _MAX_ROWS_WRAPPER)
-        scaler = StandardScaler()
-        Xss = scaler.fit_transform(Xs)
-        k_sel = min(top_k, len(names) - 1)
-        cv = min(3, max(2, len(Xss) // 50))
-
-        sfs = _SFS(
-            LinearRegression(), n_features_to_select=k_sel,
-            direction="backward", scoring="r2", cv=cv,
-        )
-        sfs.fit(Xss, ys.ravel() if ys.shape[1] == 1 else ys)
-
-        selected_mask = sfs.get_support()
-        y_avg = ys.mean(axis=1)
-        raw: Dict[str, float] = {}
-        for i, feat in enumerate(names):
-            if selected_mask[i]:
-                r = float(np.corrcoef(Xss[:, i], y_avg)[0, 1])
-                raw[feat] = abs(r) if not np.isnan(r) else 0.0
-            else:
-                raw[feat] = 0.0
-        return _build_result(
-            "sfs_backward", raw, names, top_k,
-            notes=f"Backward greedy, k={k_sel}, cv={cv}",
-            metadata={"support": {names[i]: bool(selected_mask[i]) for i in range(len(names))}},
-        )
-    except Exception as e:
-        return _failed("sfs_backward", names, top_k, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Method 12 – PCA Loadings Analysis (Dimensionality Reduction)
-# ---------------------------------------------------------------------------
-
-def _m_pca_analysis(
-    X: np.ndarray, names: List[str], top_k: int
-) -> MethodResult:
-    try:
-        scaler = StandardScaler()
-        Xs = scaler.fit_transform(X)
-        n_comp = min(X.shape[0] - 1, X.shape[1])
-        pca = PCA(n_components=n_comp, random_state=42)
-        pca.fit(Xs)
-
-        cum_var = np.cumsum(pca.explained_variance_ratio_)
-        # Components explaining first 95 % of variance
-        n95 = int(np.searchsorted(cum_var, 0.95)) + 1
-        n95 = min(n95, n_comp)
-
-        loadings = np.abs(pca.components_[:n95])  # (n95, n_features)
-        ev_ratio = pca.explained_variance_ratio_[:n95]
-
-        # Weighted loading: sum of |loading| * explained_ratio for each feature
-        weighted = (loadings * ev_ratio[:, None]).sum(axis=0)
-        raw = {feat: float(weighted[i]) for i, feat in enumerate(names)}
-        return _build_result(
-            "pca_analysis", raw, names, top_k,
-            notes=f"{n95} components explain {cum_var[n95-1]*100:.1f}% variance",
-        )
-    except Exception as e:
-        return _failed("pca_analysis", names, top_k, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Method 13 – mRMR (Advanced Filter)
+# Method 6 – mRMR (Advanced Filter)
 # ---------------------------------------------------------------------------
 
 def _m_mrmr(
@@ -955,44 +579,6 @@ def _m_permutation_importance(
         )
     except Exception as e:
         return _failed("permutation_importance", names, top_k, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Method 15 – SHAP Importance (Feature Importance)
-# ---------------------------------------------------------------------------
-
-def _m_shap_importance(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int
-) -> MethodResult:
-    if not _SHAP_AVAILABLE:
-        return _failed("shap_importance", names, top_k, "shap not installed")
-    try:
-        y2 = _to_2d(y)
-        Xs, ys = _sample(X, y2, _MAX_ROWS_WRAPPER)
-        y_avg = _avg_y(ys)
-
-        rf = RandomForestRegressor(
-            n_estimators=100, random_state=42, n_jobs=-1
-        )
-        rf.fit(Xs, y_avg)
-
-        # Cap rows for SHAP computation
-        n_shap = min(len(Xs), FS_SHAP_MAX_ROWS)
-        rng = np.random.default_rng(42)
-        shap_idx = rng.choice(len(Xs), n_shap, replace=False) if len(Xs) > n_shap else np.arange(len(Xs))
-        X_shap = Xs[shap_idx]
-
-        explainer = _shap.TreeExplainer(rf)
-        shap_values = explainer.shap_values(X_shap)
-        mean_abs_shap = np.abs(shap_values).mean(axis=0)
-
-        raw = {feat: float(mean_abs_shap[i]) for i, feat in enumerate(names)}
-        return _build_result(
-            "shap_importance", raw, names, top_k,
-            notes=f"TreeExplainer on RF, {n_shap} rows sampled",
-        )
-    except Exception as e:
-        return _failed("shap_importance", names, top_k, str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -1344,8 +930,6 @@ def _aggregate_consensus(
     top_k: int,
     vif_df: pd.DataFrame,
     corr_with_target: pd.DataFrame,
-    f_test_result: Optional[MethodResult],
-    lasso_result: Optional[MethodResult],
     en_result: Optional[MethodResult],
     X_df: Optional[pd.DataFrame] = None,
     y_df: Optional[pd.DataFrame] = None,
@@ -1371,13 +955,8 @@ def _aggregate_consensus(
     if not corr_with_target.empty:
         avg_corr_lookup = corr_with_target.abs().mean(axis=1).to_dict()
 
-    # Build p-value lookup from F-test
-    p_lookup: Dict[str, float] = {}
-    if f_test_result and f_test_result.success:
-        p_lookup = f_test_result.metadata.get("p_values", {})
-
-    # --- New scoring components ---
-    ps_scores      = _compute_predictive_strength(all_features, method_results)
+    # Compute the four score components
+    ps_scores       = _compute_predictive_strength(all_features, method_results)
     avg_rank_scores = _compute_avg_rank(all_features, scoring_results)
 
     # Missing % per feature for quality score
@@ -1426,9 +1005,8 @@ def _aggregate_consensus(
             1,
         )
 
-        vif = vif_lookup.get(feat, np.nan)
+        vif      = vif_lookup.get(feat, np.nan)
         avg_corr = avg_corr_lookup.get(feat, np.nan)
-        p_val = p_lookup.get(feat, np.nan)
 
         recommendation = _assign_recommendation(
             final_score, ps, fq,
@@ -1437,11 +1015,7 @@ def _aggregate_consensus(
             n_targets=n_targets,
         )
 
-        # Lasso / ElasticNet selection flags
-        lasso_sel = (
-            lasso_result.metadata.get("selected_mask", {}).get(feat, False)
-            if lasso_result and lasso_result.success else None
-        )
+        # Elastic Net selection flag (binary: coefficient > threshold)
         en_sel = (
             en_result.metadata.get("selected_mask", {}).get(feat, False)
             if en_result and en_result.success else None
@@ -1461,8 +1035,6 @@ def _aggregate_consensus(
             "AvgRank":              avg_rank_scores.get(feat, float(len(all_features))),
             "CorrWithTarget":       round(float(avg_corr), 4) if not np.isnan(avg_corr) else None,
             "VIF":                  round(float(vif), 2) if not np.isnan(vif) else None,
-            "PValue":               round(float(p_val), 4) if not np.isnan(p_val) else None,
-            "LassoSelected":        lasso_sel,
             "ElasticNetSelected":   en_sel,
             "Recommendation":       recommendation,
         })
@@ -1494,8 +1066,6 @@ def _generate_reasoning(
     method_results: List[MethodResult],
     corr_with_target: pd.DataFrame,
     vif_df: pd.DataFrame,
-    f_result: Optional[MethodResult],
-    rf_result: Optional[MethodResult],
 ) -> str:
     lines: List[str] = []
 
@@ -1560,15 +1130,6 @@ def _generate_reasoning(
     else:
         reason_lines.append(f"🔴 Low predictive power (Strength: {ps:.1f})")
 
-    # SHAP contribution
-    shap_result = next((r for r in method_results if r.method_id == "shap_importance" and r.success), None)
-    if shap_result:
-        shap_norm = shap_result.all_scores.get(feat, 0.0)
-        if shap_norm > 0.6:
-            reason_lines.append("✅ Strong SHAP contribution")
-        elif shap_norm > 0.3:
-            reason_lines.append("🔵 Moderate SHAP contribution")
-
     # Permutation importance contribution
     perm_result = next((r for r in method_results if r.method_id == "permutation_importance" and r.success), None)
     if perm_result:
@@ -1626,38 +1187,18 @@ def _generate_reasoning(
         parts = [f"`{col}`: r={val:+.3f} ({_corr_strength(val)})" for col, val in cors.items()]
         lines.append("**Correlation with target(s):** " + " | ".join(parts))
 
-    # F-test significance
-    p_val = row.get("PValue")
-    if p_val is not None:
-        sig = "✅ Statistically significant (p < 0.05)" if p_val < 0.05 else "⚠️ Not statistically significant (p ≥ 0.05)"
-        lines.append(f"**Statistical Significance:** p = {p_val:.4f} — {sig}")
-
-    # RF importance
-    if rf_result and rf_result.success:
-        rf_pct = rf_result.raw_scores.get(feat, 0.0) * 100
-        lines.append(f"**RF Importance:** {rf_pct:.2f}% of total impurity reduction")
-
-    # Lasso / Elastic Net selection
-    ls = row.get("LassoSelected")
+    # Elastic Net selection flag
     en = row.get("ElasticNetSelected")
-    reg_parts = []
-    if ls is not None:
-        reg_parts.append(f"Lasso: {'✅ Selected' if ls else '❌ Eliminated'}")
     if en is not None:
-        reg_parts.append(f"Elastic Net: {'✅ Selected' if en else '❌ Eliminated'}")
-    if reg_parts:
-        lines.append("**Regularisation:** " + " | ".join(reg_parts))
+        lines.append(f"**Regularisation (Elastic Net):** {'✅ Selected' if en else '❌ Eliminated'}")
 
-    # Methods that selected / rejected this feature (scoring methods only)
-    sel_by  = [r.name for r in method_results if r.success and r.method_id in _SCORING_METHOD_IDS and feat in r.selected_features]
-    not_by  = [r.name for r in method_results if r.success and r.method_id in _SCORING_METHOD_IDS and feat not in r.selected_features]
-    info_by = [r.name for r in method_results if r.success and r.method_id not in _SCORING_METHOD_IDS]
+    # Methods that selected / rejected this feature across the 5 core scoring methods
+    sel_by = [r.name for r in method_results if r.success and r.method_id in _SCORING_METHOD_IDS and feat in r.selected_features]
+    not_by = [r.name for r in method_results if r.success and r.method_id in _SCORING_METHOD_IDS and feat not in r.selected_features]
     if sel_by:
         lines.append(f"**Selected by:** {', '.join(sel_by)}")
     if not_by:
         lines.append(f"**Not selected by:** {', '.join(not_by)}")
-    if info_by:
-        lines.append(f"**Informational (not scored):** {', '.join(info_by)}")
 
     # Business interpretation
     lines.append("")
@@ -1735,10 +1276,6 @@ def _analyze_dataset_info(
         "constant_features": dropped_const,
         "missing_pct_x":     round(X_df.isnull().mean().mean() * 100, 2),
         "missing_pct_y":     round(y_df.isnull().mean().mean() * 100, 2),
-        "xgboost_available": _XGBOOST_AVAILABLE,
-        "lightgbm_available": _LIGHTGBM_AVAILABLE,
-        "shap_available":    _SHAP_AVAILABLE,
-        "sfs_available":     _SFS_AVAILABLE,
     }
 
 
@@ -1820,28 +1357,13 @@ def run_auto_feature_selection(
 
     y_names: List[str] = y_filled.columns.tolist()
 
-    # Full method dispatch table — all method functions are preserved so that
-    # any method ID can be passed via enabled_methods for supplementary analysis.
-    # Methods not in _SCORING_METHOD_IDS will run but their results are treated
-    # as informational (excluded from SelectionFreq, PS, and FinalScore).
+    # Method dispatch table — the 5 core scoring methods only.
     method_dispatch = {
-        # ── Core scoring methods (5) ───────────────────────────────────────
         "target_correlation":     lambda: _m_target_correlation(X_vals, y_2d, names, top_k, y_names),
         "mutual_information":     lambda: _m_mutual_information(X_vals, y_2d, names, top_k, y_names),
         "mrmr":                   lambda: _m_mrmr(X_vals, y_2d, names, top_k),
         "permutation_importance": lambda: _m_permutation_importance(X_vals, y_2d, names, top_k),
         "elasticnet":             lambda: _m_elasticnet(X_vals, y_2d, names, top_k, y_names),
-        # ── Informational methods (not scored by default) ──────────────────
-        "f_test":                 lambda: _m_f_test(X_vals, y_2d, names, top_k, y_names),
-        "rf_importance":          lambda: _m_rf_importance(X_vals, y_2d, names, top_k),
-        "xgboost_importance":     lambda: _m_xgboost_importance(X_vals, y_2d, names, top_k, y_names),
-        "lightgbm_importance":    lambda: _m_lightgbm_importance(X_vals, y_2d, names, top_k, y_names),
-        "shap_importance":        lambda: _m_shap_importance(X_vals, y_2d, names, top_k),
-        "lasso":                  lambda: _m_lasso(X_vals, y_2d, names, top_k, y_names),
-        "rfe":                    lambda: _m_rfe(X_vals, y_2d, names, top_k),
-        "sfs_forward":            lambda: _m_sfs_forward(X_vals, y_2d, names, top_k),
-        "sfs_backward":           lambda: _m_sfs_backward(X_vals, y_2d, names, top_k),
-        "pca_analysis":           lambda: _m_pca_analysis(X_vals, names, top_k),
     }
 
     # ---- 5. Run selected methods ----------------------------------------
@@ -1858,15 +1380,12 @@ def run_auto_feature_selection(
 
     # ---- 6. Consensus ---------------------------------------------------
     _progress("Aggregating consensus scores…")
-    f_result  = next((r for r in method_results if r.method_id == "f_test"), None)
-    rf_result = next((r for r in method_results if r.method_id == "rf_importance"), None)
-    ls_result = next((r for r in method_results if r.method_id == "lasso"), None)
     en_result = next((r for r in method_results if r.method_id == "elasticnet"), None)
 
     _progress("Computing feature quality and stability scores…")
     consensus_df = _aggregate_consensus(
         method_results, names, top_k,
-        vif_df, corr_with_target, f_result, ls_result, en_result,
+        vif_df, corr_with_target, en_result,
         X_df=X_df, y_df=y_df,
     )
 
@@ -1884,7 +1403,6 @@ def run_auto_feature_selection(
         reasoning[feat] = _generate_reasoning(
             feat, row, method_results,
             corr_with_target, vif_df,
-            f_result, rf_result,
         )
 
     _progress("Done.")
