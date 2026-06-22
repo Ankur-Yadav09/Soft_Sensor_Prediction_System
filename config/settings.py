@@ -70,15 +70,17 @@ FS_WEIGHT_PREDICTIVE_STRENGTH:  float = 0.40
 FS_WEIGHT_FEATURE_QUALITY:      float = 0.20
 FS_WEIGHT_STABILITY:            float = 0.15
 
-# Predictive Strength sub-weights — 6 active scoring methods (sum = 1.0)
-# Corr/MI/XGB loop per target → higher weight for multi-Y reliability.
-# Perm/SHAP reduce to y_avg before scoring → lower weight to avoid dilution.
-FS_PS_CORR_WEIGHT:  float = 0.16
-FS_PS_MI_WEIGHT:    float = 0.21
-FS_PS_XGB_WEIGHT:   float = 0.16
-FS_PS_PERM_WEIGHT:  float = 0.22
-FS_PS_SHAP_WEIGHT:  float = 0.13
-FS_PS_MRMR_WEIGHT:  float = 0.12
+# Predictive Strength sub-weights — 5 active scoring methods (must sum to 1.0)
+# Permutation Importance: robust model-agnostic signal, highest weight.
+# Mutual Information: captures non-linear feature-target dependencies.
+# Target Correlation: fast, reliable linear measure.
+# mRMR: rewards relevance while penalising redundancy with already-selected features.
+# Elastic Net: regularisation-based coefficient, sparse and stable.
+FS_PS_CORR_WEIGHT:  float = 0.20   # Target Correlation
+FS_PS_MI_WEIGHT:    float = 0.25   # Mutual Information
+FS_PS_PERM_WEIGHT:  float = 0.30   # Permutation Importance
+FS_PS_MRMR_WEIGHT:  float = 0.15   # mRMR
+FS_PS_EN_WEIGHT:    float = 0.10   # Elastic Net
 
 # Multi-Y threshold scaling: each extra Y target softens PS recommendation
 # thresholds by this fraction (capped at 4 extra targets = 32% max softening).

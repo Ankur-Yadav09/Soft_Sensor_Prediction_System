@@ -1,18 +1,23 @@
 """
 src/feature_selection/auto_selector.py
 =======================================
-Intelligent Auto Feature Selection Engine — 12 methods, consensus voting,
-per-feature reasoning, VIF analysis, and final ranked recommendations.
+Intelligent Auto Feature Selection Engine — 5 core scoring methods, consensus
+voting, per-feature reasoning, VIF analysis, and final ranked recommendations.
 
-Categories
-----------
-Supervised      : Target Correlation, F-Test, Mutual Information
-Feature Importance: Random Forest, XGBoost*, LightGBM*
-Intrinsic       : Lasso, Elastic Net
-Wrapper         : RFE, Sequential Forward Selection, Sequential Backward Selection*
+Core Scoring Methods (contribute to SelectionFreq, PredictiveStrength, FinalScore)
+------------------------------------------------------------------------------------
+Supervised      : Target Correlation, Mutual Information
+Advanced Filter : mRMR (Maximum Relevance Minimum Redundancy)
+Feature Importance: Permutation Importance
+Intrinsic       : Elastic Net
+
+Informational Methods (can be run manually; do not affect scores)
+-----------------------------------------------------------------
+Supervised      : F-Test (ANOVA)
+Feature Importance: Random Forest, XGBoost, LightGBM, SHAP
+Intrinsic       : Lasso
+Wrapper         : RFE, Sequential Forward / Backward Selection
 Dimensionality  : PCA Loadings
-
-* Optional / conditional based on availability or dataset size.
 
 Public API
 ----------
@@ -49,12 +54,12 @@ from config.settings import (
     FS_HIGHLY_REC_MIN_PRED_STRENGTH,
     FS_HIGHLY_REC_MIN_QUALITY,
     FS_MULTI_Y_PS_SCALE,
-    FS_PS_CORR_WEIGHT,
-    FS_PS_MI_WEIGHT,
-    FS_PS_MRMR_WEIGHT,
-    FS_PS_PERM_WEIGHT,
-    FS_PS_SHAP_WEIGHT,
-    FS_PS_XGB_WEIGHT,
+    # Predictive Strength sub-weights for the 5 core scoring methods
+    FS_PS_CORR_WEIGHT,   # Target Correlation
+    FS_PS_MI_WEIGHT,     # Mutual Information
+    FS_PS_PERM_WEIGHT,   # Permutation Importance
+    FS_PS_MRMR_WEIGHT,   # mRMR
+    FS_PS_EN_WEIGHT,     # Elastic Net
     FS_RECOMMENDED_MIN_FINAL,
     FS_RECOMMENDED_MIN_PRED_STRENGTH,
     FS_RECOMMENDED_MIN_QUALITY,
@@ -131,29 +136,36 @@ ALL_METHOD_IDS = [
     "pca_analysis",
 ]
 
-# The 10 methods that contribute to Selection Frequency, Predictive Strength,
-# and Final Score. The remaining 5 always run but are informational only.
+# The 5 core methods that drive SelectionFrequency, PredictiveStrength, and
+# FinalScore. Only these methods are enabled by default in the run loop.
+# Adding any other method ID to enabled_methods at call time will cause it to
+# run but its results will be treated as informational (see INFORMATIONAL_METHOD_IDS).
 _SCORING_METHOD_IDS: frozenset = frozenset([
-    "target_correlation",
-    "f_test",
-    "mutual_information",
-    "mrmr",
-    "xgboost_importance",
-    "permutation_importance",
-    "shap_importance",
-    "lasso",
-    "elasticnet",
-    "rfe",
+    "target_correlation",       # Supervised: direct linear signal with each target
+    "mutual_information",       # Supervised: captures non-linear target dependencies
+    "mrmr",                     # Filter: maximum relevance, minimum redundancy
+    "permutation_importance",   # Model-based: RF permutation drop in R²
+    "elasticnet",               # Intrinsic: L1+L2 regularisation coefficient magnitude
 ])
 
-# The 5 informational methods — always run automatically, shown for context,
-# but excluded from SelectionFreq, PredictiveStrength, and FinalScore.
+# Methods excluded from scoring — they do not affect SelectionFreq, PS, or FinalScore.
+# Includes both the legacy informational methods and the demoted methods (f_test,
+# xgboost_importance, shap_importance, rfe, lasso) that were removed from scoring.
+# They can still be passed in enabled_methods for supplementary output, but their
+# results will not be counted in the consensus or Predictive Strength calculation.
 INFORMATIONAL_METHOD_IDS: frozenset = frozenset([
+    # Legacy informational (never scored)
     "rf_importance",
     "lightgbm_importance",
     "sfs_forward",
     "sfs_backward",
     "pca_analysis",
+    # Demoted from scoring — kept for optional supplementary analysis
+    "f_test",
+    "xgboost_importance",
+    "shap_importance",
+    "rfe",
+    "lasso",
 ])
 
 METHOD_LABELS: Dict[str, str] = {
@@ -192,15 +204,17 @@ METHOD_CATEGORIES: Dict[str, str] = {
     "pca_analysis":          "Dimensionality Reduction",
 }
 
-# Predictive Strength method source IDs and their config weights.
-# Only the 6 independent methods below contribute; RF and LGB are excluded.
+# Per-method contribution weights for the Predictive Strength composite score.
+# Only the 5 core scoring methods are listed here; any method absent from this
+# dict is silently excluded from the PS calculation even if it ran successfully.
+# Weights must sum to 1.0 — redistribution is handled automatically at runtime
+# if a method fails (see _compute_predictive_strength).
 _PS_METHOD_WEIGHTS: Dict[str, float] = {
-    "target_correlation":    FS_PS_CORR_WEIGHT,
-    "mutual_information":    FS_PS_MI_WEIGHT,
-    "xgboost_importance":    FS_PS_XGB_WEIGHT,
-    "permutation_importance":FS_PS_PERM_WEIGHT,
-    "shap_importance":       FS_PS_SHAP_WEIGHT,
-    "mrmr":                  FS_PS_MRMR_WEIGHT,
+    "target_correlation":     FS_PS_CORR_WEIGHT,   # 0.20 — direct linear signal
+    "mutual_information":     FS_PS_MI_WEIGHT,      # 0.25 — non-linear dependency
+    "permutation_importance": FS_PS_PERM_WEIGHT,    # 0.30 — model-agnostic drop score
+    "mrmr":                   FS_PS_MRMR_WEIGHT,    # 0.15 — relevance minus redundancy
+    "elasticnet":             FS_PS_EN_WEIGHT,      # 0.10 — regularised coefficient
 }
 
 
@@ -989,10 +1003,21 @@ def _compute_predictive_strength(
     features: List[str],
     method_results: List[MethodResult],
 ) -> Dict[str, float]:
-    """Weighted combination of predictive method scores → 0–100 per feature."""
+    """Weighted combination of 5 core scoring method scores → 0–100 per feature.
+
+    Uses _PS_METHOD_WEIGHTS to combine normalised scores from:
+      Target Correlation, Mutual Information, Permutation Importance, mRMR,
+      and Elastic Net.
+
+    Weight redistribution: if any method failed or was not run, its weight is
+    spread proportionally across the remaining active methods so the output
+    remains on the 0–100 scale regardless of which methods succeeded.
+    """
     result_by_id = {r.method_id: r for r in method_results if r.success}
 
-    # Redistribute weight from missing/failed methods proportionally
+    # Collect weights only for methods that actually produced results.
+    # Methods absent from _PS_METHOD_WEIGHTS (e.g. informational methods)
+    # are automatically excluded even if present in method_results.
     active_weights: Dict[str, float] = {}
     for mid, w in _PS_METHOD_WEIGHTS.items():
         if mid in result_by_id:
@@ -1000,12 +1025,14 @@ def _compute_predictive_strength(
 
     total_w = sum(active_weights.values())
     if total_w == 0:
+        # No core scoring method succeeded — return neutral mid-point
         return {f: 50.0 for f in features}
 
     ps: Dict[str, float] = {f: 0.0 for f in features}
     for mid, w in active_weights.items():
+        # Normalise weight so active methods always sum to 1.0
         norm_w = w / total_w
-        scores = result_by_id[mid].all_scores  # already normalized 0–1
+        scores = result_by_id[mid].all_scores  # normalised 0–1 per feature
         for feat in features:
             ps[feat] += norm_w * scores.get(feat, 0.0)
 
@@ -1178,6 +1205,10 @@ def _compute_stability_score(
 
             method_results = []
 
+            # Use three fast methods for bootstrap stability estimation.
+            # RF importance is included here (not a scoring method) because it
+            # is fast and provides a complementary tree-based signal for the
+            # stability consensus without inflating the main scoring counts.
             methods = [
                 lambda: _m_target_correlation(Xb, yb, names, k),
                 lambda: _m_mutual_information(Xb, yb, names, k),
@@ -1320,6 +1351,8 @@ def _aggregate_consensus(
     y_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
 
+    # Separate scoring methods (5 core) from informational-only methods.
+    # Only scoring_results contribute to SelectionFreq and FinalScore.
     successful      = [r for r in method_results if r.success]
     scoring_results = [r for r in successful if r.method_id in _SCORING_METHOD_IDS]
     n_scoring       = len(scoring_results)
@@ -1369,6 +1402,8 @@ def _aggregate_consensus(
         norm_scores = [r.all_scores.get(feat, 0.0) for r in scoring_results]
         avg_norm    = float(np.mean(norm_scores)) if norm_scores else 0.0
 
+        # Selection frequency: fraction of the 5 core methods that included this
+        # feature in their top-k selections, expressed as 0–100.
         freq       = sel_count / n_scoring
         freq_score = freq * 100.0
 
@@ -1376,9 +1411,13 @@ def _aggregate_consensus(
         fq   = fq_scores.get(feat, 70.0)
         stab = stab_scores.get(feat, 50.0)
 
-        # Prevent weak features from benefiting too much from consensus
+        # Dampen selection-frequency bonus for features with very low predictive
+        # strength so a weak feature cannot reach a high FinalScore purely through
+        # appearing in many method top-k lists.
         adjusted_freq_score = freq_score * (max(ps, 25.0) / 100.0)
 
+        # FinalScore = weighted combination of the four components (weights from settings.py):
+        #   SelectionFreq (25%) + PredictiveStrength (40%) + FeatureQuality (20%) + Stability (15%)
         final_score = round(
             FS_WEIGHT_SELECTION_FREQ * adjusted_freq_score
             + FS_WEIGHT_PREDICTIVE_STRENGTH * ps
@@ -1763,37 +1802,46 @@ def run_auto_feature_selection(
 
     # ---- 4. Determine which methods to run ------------------------------
     if enabled_methods is None:
-        # Auto-select the 10 independent scoring methods
+        # Default: run only the 5 core scoring methods.
+        # Permutation importance is always included since it is always a
+        # scoring method (the _MAX_FEATURES_NEW guard is retained for very
+        # large feature sets where permutation becomes slow, but in practice
+        # it runs for all reasonable dataset sizes).
         enabled_methods = [
-            "target_correlation", "f_test", "mutual_information",
-            "mrmr", "lasso", "elasticnet", "rfe",
+            "target_correlation",    # supervised: Pearson correlation with target(s)
+            "mutual_information",    # supervised: information-theoretic MI score
+            "mrmr",                  # filter: maximum relevance – minimum redundancy
+            "elasticnet",            # intrinsic: L1+L2 regularised regression
         ]
-        if _XGBOOST_AVAILABLE:
-            enabled_methods.append("xgboost_importance")
+        # Permutation importance is model-based and scales with n_features;
+        # skip only when the feature space is very large.
         if len(names) <= _MAX_FEATURES_NEW:
             enabled_methods.append("permutation_importance")
-            if _SHAP_AVAILABLE:
-                enabled_methods.append("shap_importance")
 
     y_names: List[str] = y_filled.columns.tolist()
 
-    # Method dispatcher
+    # Full method dispatch table — all method functions are preserved so that
+    # any method ID can be passed via enabled_methods for supplementary analysis.
+    # Methods not in _SCORING_METHOD_IDS will run but their results are treated
+    # as informational (excluded from SelectionFreq, PS, and FinalScore).
     method_dispatch = {
-        "target_correlation":   lambda: _m_target_correlation(X_vals, y_2d, names, top_k, y_names),
-        "f_test":               lambda: _m_f_test(X_vals, y_2d, names, top_k, y_names),
-        "mutual_information":   lambda: _m_mutual_information(X_vals, y_2d, names, top_k, y_names),
-        "mrmr":                 lambda: _m_mrmr(X_vals, y_2d, names, top_k),
-        "rf_importance":        lambda: _m_rf_importance(X_vals, y_2d, names, top_k),
-        "xgboost_importance":   lambda: _m_xgboost_importance(X_vals, y_2d, names, top_k, y_names),
-        "lightgbm_importance":  lambda: _m_lightgbm_importance(X_vals, y_2d, names, top_k, y_names),
+        # ── Core scoring methods (5) ───────────────────────────────────────
+        "target_correlation":     lambda: _m_target_correlation(X_vals, y_2d, names, top_k, y_names),
+        "mutual_information":     lambda: _m_mutual_information(X_vals, y_2d, names, top_k, y_names),
+        "mrmr":                   lambda: _m_mrmr(X_vals, y_2d, names, top_k),
         "permutation_importance": lambda: _m_permutation_importance(X_vals, y_2d, names, top_k),
-        "shap_importance":      lambda: _m_shap_importance(X_vals, y_2d, names, top_k),
-        "lasso":                lambda: _m_lasso(X_vals, y_2d, names, top_k, y_names),
-        "elasticnet":           lambda: _m_elasticnet(X_vals, y_2d, names, top_k, y_names),
-        "rfe":                  lambda: _m_rfe(X_vals, y_2d, names, top_k),
-        "sfs_forward":          lambda: _m_sfs_forward(X_vals, y_2d, names, top_k),
-        "sfs_backward":         lambda: _m_sfs_backward(X_vals, y_2d, names, top_k),
-        "pca_analysis":         lambda: _m_pca_analysis(X_vals, names, top_k),
+        "elasticnet":             lambda: _m_elasticnet(X_vals, y_2d, names, top_k, y_names),
+        # ── Informational methods (not scored by default) ──────────────────
+        "f_test":                 lambda: _m_f_test(X_vals, y_2d, names, top_k, y_names),
+        "rf_importance":          lambda: _m_rf_importance(X_vals, y_2d, names, top_k),
+        "xgboost_importance":     lambda: _m_xgboost_importance(X_vals, y_2d, names, top_k, y_names),
+        "lightgbm_importance":    lambda: _m_lightgbm_importance(X_vals, y_2d, names, top_k, y_names),
+        "shap_importance":        lambda: _m_shap_importance(X_vals, y_2d, names, top_k),
+        "lasso":                  lambda: _m_lasso(X_vals, y_2d, names, top_k, y_names),
+        "rfe":                    lambda: _m_rfe(X_vals, y_2d, names, top_k),
+        "sfs_forward":            lambda: _m_sfs_forward(X_vals, y_2d, names, top_k),
+        "sfs_backward":           lambda: _m_sfs_backward(X_vals, y_2d, names, top_k),
+        "pca_analysis":           lambda: _m_pca_analysis(X_vals, names, top_k),
     }
 
     # ---- 5. Run selected methods ----------------------------------------
