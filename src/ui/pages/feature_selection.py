@@ -422,7 +422,9 @@ def _render_analysis_results(
             return f"color: {color}; font-weight: bold" if color else ""
 
         base_cols = [
-            "Feature", "SelectionCount", "TotalMethods", "SelectionFreq",
+            "Feature",
+            "CoverageCount", "CoverageRatio", "CoveragePercent",   # multi-Y coverage (absent for single-Y)
+            "SelectionCount", "TotalMethods", "SelectionFreq",
             "AvgRank", "PredictiveStrength", "FeatureQuality", "StabilityScore", "FinalScore",
             "CorrWithTarget", "VIF",
             "ElasticNetSelected", "Recommendation",
@@ -631,6 +633,29 @@ def _render_analysis_results(
                     "Weak Feature":       sum(1 for v in t_cdf["Recommendation"] if v in ("Weak Feature", "Remove")),
                 })
             st.dataframe(pd.DataFrame(count_rows), use_container_width=True)
+
+            st.markdown("#### Per-Target Predictive Strength")
+            st.caption(
+                "Predictive Strength each target assigned to a feature independently. "
+                "The aggregated consensus uses the mean of these values."
+            )
+            ps_rows = []
+            for feat in pt_result.union_features + pt_result.optional_union:
+                n_cov = len(pt_result.feature_target_map.get(feat, []))
+                row_ps: dict = {
+                    "Feature":  feat,
+                    "Coverage": f"{n_cov}/{n_targets}",
+                }
+                for t, t_res in pt_result.target_results.items():
+                    t_cdf = t_res.consensus_df
+                    if not t_cdf.empty and "Feature" in t_cdf.columns:
+                        match = t_cdf.loc[t_cdf["Feature"] == feat, "PredictiveStrength"]
+                        row_ps[f"PS: {t}"] = round(float(match.values[0]), 1) if len(match) else None
+                    else:
+                        row_ps[f"PS: {t}"] = None
+                ps_rows.append(row_ps)
+            if ps_rows:
+                st.dataframe(pd.DataFrame(ps_rows), use_container_width=True)
 
     st.markdown("---")
 
@@ -1011,22 +1036,8 @@ def render() -> None:
 
                 with st.spinner("Analysing features — this may take 20–60 seconds…"):
                     try:
-                        result = run_auto_feature_selection(
-                            X_df=X_cand, y_df=y_targ,
-                            top_k=top_k_val,
-                            enabled_methods=enabled_methods,
-                            corr_threshold=corr_thresh_val,
-                            vif_threshold=vif_thresh_val,
-                            progress_callback=_cb,
-                        )
-                        st.session_state["_fs_result"]      = result
-                        st.session_state["_fs_y_cols"]      = auto_y_cols
-                        st.session_state["_fs_top_k"]       = top_k_val
-                        st.session_state["_fs_corr_thresh"] = corr_thresh_val
-                        st.session_state.pop("_fs_per_target_result", None)
-
                         if len(auto_y_cols) > 1:
-                            _cb(f"Running per-target analysis for {len(auto_y_cols)} targets…")
+                            # Multi-Y: per-target run is the sole engine
                             pt_result = run_per_target_auto_selection(
                                 X_df=X_cand, y_df=y_targ,
                                 top_k=top_k_val,
@@ -1035,7 +1046,36 @@ def render() -> None:
                                 vif_threshold=vif_thresh_val,
                                 progress_callback=_cb,
                             )
+                            # Build pseudo AutoSelectionResult for display compatibility
+                            result = AutoSelectionResult(
+                                method_results=pt_result.method_results,
+                                consensus_df=pt_result.consensus_df,
+                                correlation_matrix=pt_result.correlation_matrix,
+                                corr_with_target=pt_result.corr_with_target,
+                                vif_df=pt_result.vif_df,
+                                dataset_info=pt_result.dataset_info,
+                                recommended_features=pt_result.recommended_features,
+                                optional_features=pt_result.optional_features,
+                                features_to_remove=pt_result.features_to_remove,
+                                per_feature_reasoning=pt_result.per_feature_reasoning,
+                            )
                             st.session_state["_fs_per_target_result"] = pt_result
+                        else:
+                            # Single-Y: unchanged path
+                            result = run_auto_feature_selection(
+                                X_df=X_cand, y_df=y_targ,
+                                top_k=top_k_val,
+                                enabled_methods=enabled_methods,
+                                corr_threshold=corr_thresh_val,
+                                vif_threshold=vif_thresh_val,
+                                progress_callback=_cb,
+                            )
+                            st.session_state.pop("_fs_per_target_result", None)
+
+                        st.session_state["_fs_result"]      = result
+                        st.session_state["_fs_y_cols"]      = auto_y_cols
+                        st.session_state["_fs_top_k"]       = top_k_val
+                        st.session_state["_fs_corr_thresh"] = corr_thresh_val
                     except Exception as exc:
                         st.error(f"Analysis failed: {exc}")
                         progress_bar.empty()
@@ -1092,22 +1132,8 @@ def render() -> None:
 
             with st.spinner("Running automated analysis — this may take 20–90 seconds…"):
                 try:
-                    result = run_auto_feature_selection(
-                        X_df=X_cand, y_df=y_targ,
-                        top_k=auto_top_k,
-                        enabled_methods=avail_methods,
-                        corr_threshold=0.85,
-                        vif_threshold=10.0,
-                        progress_callback=_auto_cb,
-                    )
-                    st.session_state["_fs_result"]      = result
-                    st.session_state["_fs_y_cols"]      = auto_y_cols
-                    st.session_state["_fs_top_k"]       = auto_top_k
-                    st.session_state["_fs_corr_thresh"] = 0.85
-                    st.session_state.pop("_fs_per_target_result", None)
-
                     if len(auto_y_cols) > 1:
-                        _auto_cb(f"Running per-target analysis for {len(auto_y_cols)} targets…")
+                        # Multi-Y: per-target run is the sole engine
                         pt_result = run_per_target_auto_selection(
                             X_df=X_cand, y_df=y_targ,
                             top_k=auto_top_k,
@@ -1116,7 +1142,36 @@ def render() -> None:
                             vif_threshold=10.0,
                             progress_callback=_auto_cb,
                         )
+                        # Build pseudo AutoSelectionResult for display compatibility
+                        result = AutoSelectionResult(
+                            method_results=pt_result.method_results,
+                            consensus_df=pt_result.consensus_df,
+                            correlation_matrix=pt_result.correlation_matrix,
+                            corr_with_target=pt_result.corr_with_target,
+                            vif_df=pt_result.vif_df,
+                            dataset_info=pt_result.dataset_info,
+                            recommended_features=pt_result.recommended_features,
+                            optional_features=pt_result.optional_features,
+                            features_to_remove=pt_result.features_to_remove,
+                            per_feature_reasoning=pt_result.per_feature_reasoning,
+                        )
                         st.session_state["_fs_per_target_result"] = pt_result
+                    else:
+                        # Single-Y: unchanged path
+                        result = run_auto_feature_selection(
+                            X_df=X_cand, y_df=y_targ,
+                            top_k=auto_top_k,
+                            enabled_methods=avail_methods,
+                            corr_threshold=0.85,
+                            vif_threshold=10.0,
+                            progress_callback=_auto_cb,
+                        )
+                        st.session_state.pop("_fs_per_target_result", None)
+
+                    st.session_state["_fs_result"]      = result
+                    st.session_state["_fs_y_cols"]      = auto_y_cols
+                    st.session_state["_fs_top_k"]       = auto_top_k
+                    st.session_state["_fs_corr_thresh"] = 0.85
                 except Exception as exc:
                     st.error(f"Automated analysis failed: {exc}")
                     progress_bar.empty()
@@ -1145,19 +1200,20 @@ def render() -> None:
     _step_badge(4, "Analysis Results")
     _render_analysis_results(result, res_y, res_k, candidate_x, c_thresh, numeric_cols, pt_result)
 
-    # Summary of selections — for multi-Y, prefer union-based counts
+    # Summary of selections — for multi-Y use aggregated per-target consensus
     if pt_result is not None:
-        union_rec   = pt_result.union_features
-        union_opt   = pt_result.optional_union
-        all_keep    = union_rec + union_opt
+        rec      = pt_result.recommended_features
+        opt      = pt_result.optional_features
+        weak     = pt_result.features_to_remove
+        all_keep = rec + opt
         st.markdown(
-            f"**Union Recommended X — {len(union_rec)} features** "
-            f"(union across all {len(res_y)} targets):  \n"
-            f"`{', '.join(union_rec) or 'None'}`  \n"
-            f"**Union Consider X ({len(union_opt)}):** "
-            f"`{', '.join(union_opt) or 'None'}`  \n"
-            f"**Combined-run Weak Features ({len(result.features_to_remove)}):** "
-            f"`{', '.join(result.features_to_remove) or 'None'}`"
+            f"**Per-Target Recommended X — {len(rec)} features** "
+            f"(coverage-based union across {len(res_y)} targets):  \n"
+            f"`{', '.join(rec) or 'None'}`  \n"
+            f"**Consider X ({len(opt)}):** "
+            f"`{', '.join(opt) or 'None'}`  \n"
+            f"**Weak Feature ({len(weak)}):** "
+            f"`{', '.join(weak) or 'None'}`"
         )
     else:
         all_keep = result.recommended_features + result.optional_features
@@ -1170,8 +1226,8 @@ def render() -> None:
             f"`{', '.join(result.features_to_remove) or 'None'}`"
         )
 
-    # Quick-apply buttons — for multi-Y use union; for single-Y use combined result
-    rec_features = pt_result.union_features if pt_result else result.recommended_features
+    # Quick-apply buttons — for multi-Y use aggregated recommended_features
+    rec_features = pt_result.recommended_features if pt_result else result.recommended_features
     qa1, qa2, qa3, qa4 = st.columns(4)
     with qa1:
         if st.button(f"✅ Use Recommended ({len(rec_features)})", key="fs_qa_rec"):

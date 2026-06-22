@@ -180,7 +180,13 @@ class AutoSelectionResult:
 
 @dataclass
 class PerTargetSelectionResult:
-    """Result of running feature selection independently for each Y target."""
+    """Result of running feature selection independently for each Y target.
+
+    For multi-Y datasets this is the PRIMARY result object — it replaces the
+    combined-average AutoSelectionResult.  All consensus fields are derived by
+    aggregating per-target scores rather than averaging Y columns before scoring.
+    """
+    # --- per-target breakdown (unchanged) ---
     target_results: Dict[str, AutoSelectionResult]
     # union of Highly Recommended + Recommended across ALL targets (sorted by coverage desc)
     union_features: List[str]
@@ -188,6 +194,18 @@ class PerTargetSelectionResult:
     optional_union: List[str]
     # feature → list of Y target names it was recommended for
     feature_target_map: Dict[str, List[str]]
+
+    # --- aggregated result fields (mirrors AutoSelectionResult) ---
+    consensus_df: pd.DataFrame              # coverage-based aggregated ranking
+    recommended_features: List[str]         # HR + Rec from aggregated consensus
+    optional_features: List[str]            # Consider from aggregated consensus
+    features_to_remove: List[str]           # Weak Feature from aggregated consensus
+    per_feature_reasoning: Dict[str, str]   # reasoning keyed by feature name
+    method_results: List[MethodResult]      # per-method results averaged across targets
+    corr_with_target: pd.DataFrame          # all Y columns concat'd from per-target results
+    vif_df: pd.DataFrame                    # X–X VIF (same for all targets)
+    dataset_info: Dict[str, Any]            # merged info with n_targets, target_names
+    correlation_matrix: pd.DataFrame        # X–X Pearson (same for all targets)
 
 
 # ---------------------------------------------------------------------------
@@ -1421,6 +1439,208 @@ def run_auto_feature_selection(
 
 
 # ---------------------------------------------------------------------------
+# Per-target aggregation helpers
+# ---------------------------------------------------------------------------
+
+def _get_ps(cdf: pd.DataFrame, feat: str) -> float:
+    """Safely read PredictiveStrength for a feature from a consensus DataFrame."""
+    if cdf.empty or "Feature" not in cdf.columns:
+        return 0.0
+    match = cdf.loc[cdf["Feature"] == feat, "PredictiveStrength"]
+    return float(match.values[0]) if len(match) > 0 else 0.0
+
+
+def _build_aggregate_method_results(
+    target_results: Dict[str, "AutoSelectionResult"],
+    scope_features: List[str],
+) -> List[MethodResult]:
+    """Build one MethodResult per core method by averaging scores across all per-target runs.
+
+    Used exclusively by the ranking matrix heatmap (tab3) — does not affect FinalScore.
+    """
+    n_targets = len(target_results)
+    aggregate: List[MethodResult] = []
+
+    for mid in list(_SCORING_METHOD_IDS):
+        # Collect successful per-target results for this method
+        per_target: List[MethodResult] = []
+        for res in target_results.values():
+            mr = next((r for r in res.method_results if r.method_id == mid and r.success), None)
+            if mr is not None:
+                per_target.append(mr)
+
+        if not per_target:
+            continue
+
+        # Average all_scores and raw_scores across targets (nan-safe mean)
+        avg_all: Dict[str, float] = {}
+        avg_raw: Dict[str, float] = {}
+        for feat in scope_features:
+            vals_all = [r.all_scores.get(feat, 0.0) for r in per_target]
+            vals_raw = [r.raw_scores.get(feat, 0.0) for r in per_target]
+            avg_all[feat] = float(np.nanmean(vals_all))
+            avg_raw[feat] = float(np.nanmean(vals_raw))
+
+        # A feature is "selected" if it appears in top-k of ≥50% of successful target runs
+        threshold = max(1, len(per_target) / 2)
+        sel_counts = {feat: sum(1 for r in per_target if feat in r.selected_features)
+                      for feat in scope_features}
+        selected = [f for f, c in sel_counts.items() if c >= threshold]
+        selected.sort(key=lambda f: avg_all.get(f, 0.0), reverse=True)
+
+        first = per_target[0]
+        aggregate.append(MethodResult(
+            name=first.name,
+            method_id=mid,
+            category=first.category,
+            selected_features=selected,
+            all_scores=avg_all,
+            raw_scores=avg_raw,
+            top_k=first.top_k,
+            notes=f"Aggregated across {len(per_target)}/{n_targets} targets",
+            success=True,
+            metadata={},
+            per_target_scores={},
+        ))
+
+    return aggregate
+
+
+def _aggregate_from_per_target_results(
+    target_results: Dict[str, "AutoSelectionResult"],
+    scope_features: List[str],
+    feature_target_map: Dict[str, List[str]],
+    X_df: pd.DataFrame,
+    y_df: pd.DataFrame,
+    top_k: int,
+) -> pd.DataFrame:
+    """Build a coverage-based consensus DataFrame from per-target AutoSelectionResult objects.
+
+    Selection Frequency is replaced by Coverage Ratio (fraction of Y targets that
+    recommended the feature).  Predictive Strength is the nanmean of per-target PS.
+    Feature Quality and Stability Score are computed once on the full X/Y datasets.
+    The Final Score formula and recommendation thresholds are unchanged.
+    """
+    n_targets = len(target_results)
+    y_cols = list(target_results.keys())
+
+    # --- shared quality / stability scores (computed once for all features) ---
+    vif_df: pd.DataFrame = pd.DataFrame()
+    any_res = next(iter(target_results.values()))
+    vif_df = any_res.vif_df
+
+    missing_pct: Dict[str, float] = {
+        col: float(X_df[col].isnull().mean())
+        for col in scope_features if col in X_df.columns
+    }
+    x_for_quality = (
+        X_df[scope_features]
+        if all(f in X_df.columns for f in scope_features)
+        else pd.DataFrame(columns=scope_features)
+    )
+    fq_scores  = _compute_feature_quality(scope_features, x_for_quality, vif_df, missing_pct)
+    stab_scores = _compute_stability_score(X_df, y_df, scope_features, top_k)
+
+    # VIF and avg corr lookups from any representative per-target result
+    vif_lookup: Dict[str, float] = {}
+    if not vif_df.empty and "VIF" in vif_df.columns:
+        vif_lookup = dict(zip(vif_df["Feature"], vif_df["VIF"]))
+
+    # Combined corr_with_target for avg corr display
+    corr_frames = [res.corr_with_target for res in target_results.values()]
+    combined_corr = pd.concat(corr_frames, axis=1) if corr_frames else pd.DataFrame()
+    avg_corr_lookup: Dict[str, float] = {}
+    if not combined_corr.empty:
+        avg_corr_lookup = combined_corr.abs().mean(axis=1).to_dict()
+
+    rows = []
+    for feat in scope_features:
+        # --- Coverage (replaces method-based SelectionFreq) ---
+        coverage_count = len(feature_target_map.get(feat, []))
+        coverage_ratio = coverage_count / n_targets
+        coverage_pct   = coverage_ratio * 100.0
+
+        # --- Predictive Strength: nanmean of per-target PS ---
+        ps_vals: List[float] = []
+        for y_col, res in target_results.items():
+            ps_vals.append(_get_ps(res.consensus_df, feat))
+        ps = float(np.nanmean(ps_vals)) if ps_vals else 0.0
+
+        # --- Per-target AvgRank (informational) ---
+        rank_vals: List[float] = []
+        for res in target_results.values():
+            cdf = res.consensus_df
+            if not cdf.empty and "Feature" in cdf.columns and "AvgRank" in cdf.columns:
+                match = cdf.loc[cdf["Feature"] == feat, "AvgRank"]
+                if len(match) > 0:
+                    rank_vals.append(float(match.values[0]))
+        avg_rank = float(np.nanmean(rank_vals)) if rank_vals else float(len(scope_features))
+
+        fq   = fq_scores.get(feat, 70.0)
+        stab = stab_scores.get(feat, 50.0)
+
+        # --- FinalScore (same damped formula as _aggregate_consensus) ---
+        adjusted_freq = coverage_pct * (max(ps, 25.0) / 100.0)
+        final_score = round(
+            FS_WEIGHT_SELECTION_FREQ       * adjusted_freq
+            + FS_WEIGHT_PREDICTIVE_STRENGTH * ps
+            + FS_WEIGHT_FEATURE_QUALITY     * fq
+            + FS_WEIGHT_STABILITY           * stab,
+            1,
+        )
+
+        vif      = vif_lookup.get(feat, np.nan)
+        avg_corr = avg_corr_lookup.get(feat, np.nan)
+
+        recommendation = _assign_recommendation(
+            final_score, ps, fq,
+            vif if not np.isnan(vif) else None,
+            avg_corr if not np.isnan(avg_corr) else 0.0,
+            n_targets=n_targets,
+        )
+
+        # ElasticNetSelected = True if EN selected feature in ANY target's run
+        en_sel: Optional[bool] = None
+        for res in target_results.values():
+            en_r = next((r for r in res.method_results if r.method_id == "elasticnet" and r.success), None)
+            if en_r is not None:
+                if en_r.metadata.get("selected_mask", {}).get(feat, False):
+                    en_sel = True
+                    break
+                else:
+                    en_sel = False  # saw elasticnet but not selected; may be overridden by another target
+
+        rows.append({
+            "Feature":          feat,
+            # Coverage columns (new, explicit)
+            "CoverageCount":    coverage_count,
+            "CoverageRatio":    round(coverage_ratio, 4),
+            "CoveragePercent":  round(coverage_pct, 1),
+            # Legacy column names kept so existing UI code works unchanged
+            "SelectionCount":   coverage_count,
+            "TotalMethods":     n_targets,
+            "SelectionFreq":    round(coverage_pct, 1),
+            "PredictiveStrength": round(ps, 1),
+            "FeatureQuality":   round(fq, 1),
+            "StabilityScore":   round(stab, 1),
+            "FinalScore":       final_score,
+            "ConfidenceScore":  final_score,
+            "AvgRank":          round(avg_rank, 1),
+            "CorrWithTarget":   round(float(avg_corr), 4) if not np.isnan(avg_corr) else None,
+            "VIF":              round(float(vif), 2) if not np.isnan(vif) else None,
+            "ElasticNetSelected": en_sel,
+            "Recommendation":   recommendation,
+        })
+
+    df = pd.DataFrame(rows).sort_values(
+        ["FinalScore", "PredictiveStrength"], ascending=[False, False]
+    ).reset_index(drop=True)
+    df.index = range(1, len(df) + 1)
+    df.index.name = "Rank"
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Per-target orchestration
 # ---------------------------------------------------------------------------
 
@@ -1501,10 +1721,64 @@ def run_per_target_auto_selection(
         reverse=True,
     )
 
+    # Build aggregated consensus from per-target results
+    _progress("Aggregating per-target results…")
+    scope = list(dict.fromkeys(union_features + optional_union))  # ordered, deduped
+
+    consensus_df = _aggregate_from_per_target_results(
+        target_results, scope, feature_target_map, X_df, y_df, top_k
+    )
+
+    # Derive recommendation buckets from the aggregated consensus
+    recommended_features = consensus_df.loc[
+        consensus_df["Recommendation"].isin(["Highly Recommended", "Recommended"]),
+        "Feature",
+    ].tolist()
+    optional_features = consensus_df.loc[
+        consensus_df["Recommendation"] == "Consider", "Feature"
+    ].tolist()
+    features_to_remove = consensus_df.loc[
+        consensus_df["Recommendation"] == "Weak Feature", "Feature"
+    ].tolist()
+
+    # Combined corr_with_target: all Y columns together
+    corr_frames = [res.corr_with_target for res in target_results.values() if not res.corr_with_target.empty]
+    combined_corr = pd.concat(corr_frames, axis=1) if corr_frames else pd.DataFrame()
+
+    # Aggregate method results (averaged across targets) for ranking matrix display
+    agg_method_results = _build_aggregate_method_results(target_results, scope)
+
+    # Per-feature reasoning: use method_results from the best-PS target for each feature
+    per_feature_reasoning: Dict[str, str] = {}
+    any_res = next(iter(target_results.values()))
+    for feat in scope:
+        best_y = max(
+            target_results,
+            key=lambda y: _get_ps(target_results[y].consensus_df, feat),
+        )
+        best_res = target_results[best_y]
+        row = consensus_df.loc[consensus_df["Feature"] == feat].squeeze()
+        per_feature_reasoning[feat] = _generate_reasoning(
+            feat, row,
+            best_res.method_results,
+            combined_corr,
+            best_res.vif_df,
+        )
+
     _progress("Per-target selection complete.")
     return PerTargetSelectionResult(
         target_results=target_results,
         union_features=union_features,
         optional_union=optional_union,
         feature_target_map=feature_target_map,
+        consensus_df=consensus_df,
+        recommended_features=recommended_features,
+        optional_features=optional_features,
+        features_to_remove=features_to_remove,
+        per_feature_reasoning=per_feature_reasoning,
+        method_results=agg_method_results,
+        corr_with_target=combined_corr,
+        vif_df=any_res.vif_df,
+        dataset_info={**any_res.dataset_info, "n_targets": n_targets, "target_names": y_cols},
+        correlation_matrix=any_res.correlation_matrix,
     )
