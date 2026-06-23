@@ -427,7 +427,7 @@ def _render_analysis_results(
             "SelectionCount", "TotalMethods", "SelectionFreq",
             "AvgRank", "PredictiveStrength", "FeatureQuality", "StabilityScore", "FinalScore",
             "CorrWithTarget", "VIF",
-            "ElasticNetSelected", "Recommendation",
+            "ElasticNetSelected", "Recommendation", "MulticollinearWith",
         ]
         available_cols = [c for c in base_cols if c in cdf.columns]
         disp_df = cdf.reset_index()[available_cols] if "Rank" not in cdf.columns else cdf[available_cols]

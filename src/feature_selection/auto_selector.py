@@ -938,6 +938,66 @@ def _assign_recommendation(
     return "Weak Feature"
 
 
+def _dedup_multicollinear(
+    consensus_df: pd.DataFrame,
+    correlation_matrix: pd.DataFrame,
+    corr_threshold: float,
+) -> pd.DataFrame:
+    """Post-scoring deduplication pass.
+
+    For each pair of Recommended/Highly Recommended features whose X–X
+    Pearson |r| exceeds corr_threshold, keep the one with the higher
+    FinalScore and downgrade the other to 'Consider'.  Processes pairs
+    greedily from highest |r| to lowest so the most redundant pairs are
+    resolved first.  A downgraded feature is stamped with a
+    'MulticollinearWith' column value for display and reasoning.
+    """
+    if correlation_matrix.empty or corr_threshold >= 1.0:
+        return consensus_df
+
+    keep_recs = {"Recommended", "Highly Recommended"}
+    df = consensus_df.copy()
+
+    rec_feats = set(df.loc[df["Recommendation"].isin(keep_recs), "Feature"].tolist())
+    feat_list = [f for f in correlation_matrix.columns if f in rec_feats]
+
+    pairs: List[tuple] = []
+    for i in range(len(feat_list)):
+        for j in range(i + 1, len(feat_list)):
+            a, b = feat_list[i], feat_list[j]
+            if a in correlation_matrix.index and b in correlation_matrix.columns:
+                r = abs(float(correlation_matrix.loc[a, b]))
+                if r > corr_threshold:
+                    pairs.append((r, a, b))
+
+    pairs.sort(reverse=True)
+
+    downgraded: set = set()
+    for r_val, a, b in pairs:
+        if a in downgraded or b in downgraded:
+            continue
+        rec_a = df.loc[df["Feature"] == a, "Recommendation"].values
+        rec_b = df.loc[df["Feature"] == b, "Recommendation"].values
+        if not (
+            len(rec_a) and rec_a[0] in keep_recs
+            and len(rec_b) and rec_b[0] in keep_recs
+        ):
+            continue
+
+        score_a = float(df.loc[df["Feature"] == a, "FinalScore"].values[0])
+        score_b = float(df.loc[df["Feature"] == b, "FinalScore"].values[0])
+        winner = a if score_a >= score_b else b
+        loser  = b if score_a >= score_b else a
+
+        df.loc[df["Feature"] == loser, "Recommendation"] = "Consider"
+        df.loc[df["Feature"] == loser, "MulticollinearWith"] = (
+            f"{winner} (|r|={r_val:.4f})"
+        )
+        downgraded.add(loser)
+
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Consensus aggregation
 # ---------------------------------------------------------------------------
@@ -1309,6 +1369,7 @@ def run_auto_feature_selection(
     corr_threshold: float = 0.85,
     vif_threshold: float = 10.0,
     progress_callback=None,
+    _apply_dedup: bool = True,
 ) -> AutoSelectionResult:
     """
     Run the comprehensive auto feature selection pipeline.
@@ -1406,6 +1467,8 @@ def run_auto_feature_selection(
         vif_df, corr_with_target, en_result,
         X_df=X_df, y_df=y_df,
     )
+    if _apply_dedup:
+        consensus_df = _dedup_multicollinear(consensus_df, corr_matrix, corr_threshold)
 
     # ---- 7. Categorise features -----------------------------------------
     recommended  = consensus_df[consensus_df["Recommendation"].isin(
@@ -1422,6 +1485,13 @@ def run_auto_feature_selection(
             feat, row, method_results,
             corr_with_target, vif_df,
         )
+        if _apply_dedup:
+            mc = row.get("MulticollinearWith") if hasattr(row, "get") else None
+            if mc and pd.notna(mc):
+                reasoning[feat] += (
+                    f" Downgraded from Recommended: highly correlated with {mc}"
+                    " — include only one of this pair."
+                )
 
     _progress("Done.")
     return AutoSelectionResult(
@@ -1698,6 +1768,7 @@ def run_per_target_auto_selection(
             corr_threshold=corr_threshold,
             vif_threshold=vif_threshold,
             progress_callback=None,  # suppress per-step messages inside each sub-run
+            _apply_dedup=False,      # dedup runs once on the aggregate, not per-target
         )
         target_results[y_col] = result
 
@@ -1733,6 +1804,11 @@ def run_per_target_auto_selection(
 
     consensus_df = _aggregate_from_per_target_results(
         target_results, scope, feature_target_map, X_df, y_df, top_k
+    )
+    consensus_df = _dedup_multicollinear(
+        consensus_df,
+        next(iter(target_results.values())).correlation_matrix,
+        corr_threshold,
     )
 
     # Derive recommendation buckets from the aggregated consensus
@@ -1770,6 +1846,12 @@ def run_per_target_auto_selection(
             combined_corr,
             best_res.vif_df,
         )
+        mc = row.get("MulticollinearWith") if hasattr(row, "get") else None
+        if mc and pd.notna(mc):
+            per_feature_reasoning[feat] += (
+                f" Downgraded from Recommended: highly correlated with {mc}"
+                " — include only one of this pair."
+            )
 
     _progress("Per-target selection complete.")
     return PerTargetSelectionResult(
