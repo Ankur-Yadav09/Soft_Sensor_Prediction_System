@@ -537,37 +537,139 @@ def _render_analysis_results(
 
     with tab5:
         st.markdown("#### Per-Method Feature Rankings")
-        st.caption(
-            "Methods that train per Y target show individual raw scores alongside "
-            "the averaged raw score and normalized score. Methods that reduce to a "
-            "single averaged Y (Permutation, mRMR) show only Avg Raw and Norm Score."
-        )
-        for r in result.method_results:
-            status = "✅" if r.success else "❌"
-            with st.expander(f"{status} **{r.name}** — {r.category}  |  {len(r.selected_features)} features  ({r.notes})"):
-                if not r.success:
-                    st.error(r.notes)
-                    continue
-                has_per_y = bool(r.per_target_scores)
-                if has_per_y:
-                    sample_feat = r.selected_features[0] if r.selected_features else None
-                    y_col_names = list(r.per_target_scores.get(sample_feat, {}).keys()) if sample_feat else []
-                else:
-                    y_col_names = []
-                rows = []
-                for rank, feat in enumerate(r.selected_features, 1):
-                    row_dict: dict = {
-                        "Rank": rank,
-                        "Feature": feat,
-                    }
-                    if has_per_y and y_col_names:
-                        for yc in y_col_names:
-                            row_dict[f"{yc} Raw"] = round(r.per_target_scores.get(feat, {}).get(yc, 0.0), 5)
-                    row_dict["Avg Raw"] = round(r.raw_scores.get(feat, 0), 5)
-                    row_dict["Norm Score"] = round(r.all_scores.get(feat, 0), 4)
-                    rows.append(row_dict)
-                if rows:
-                    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+        if pt_result is not None:
+            # ----------------------------------------------------------------
+            # Multi-Y path: each method ran independently per target.
+            # Show one expander per method with a score column for every Y.
+            # ----------------------------------------------------------------
+            st.caption(
+                "Each method ran independently for every Y target. "
+                "Scores shown per target alongside the aggregated average. "
+                "Rank is based on the aggregated average score."
+            )
+
+            n_t = len(pt_result.target_results)
+            y_cols_ordered = list(pt_result.target_results.keys())
+
+            for agg_r in result.method_results:
+                # Collect per-target MethodResult for this method
+                t_method: Dict[str, any] = {}
+                for y_col in y_cols_ordered:
+                    t_res = pt_result.target_results[y_col]
+                    mr = next(
+                        (r for r in t_res.method_results if r.method_id == agg_r.method_id and r.success),
+                        None,
+                    )
+                    if mr is not None:
+                        t_method[y_col] = mr
+
+                n_ran = len(t_method)
+                status = "✅" if n_ran > 0 else "❌"
+                header = (
+                    f"{status} **{agg_r.name}** — {agg_r.category}  |  "
+                    f"ran for {n_ran}/{n_t} targets  |  "
+                    f"{len(agg_r.selected_features)} features selected (≥50% targets)"
+                )
+                with st.expander(header):
+                    if n_ran == 0:
+                        st.error("Method failed for all targets.")
+                        continue
+
+                    # All features in the union, sorted by aggregated avg score desc
+                    all_scope = pt_result.union_features + pt_result.optional_union
+                    all_scope_sorted = sorted(
+                        all_scope,
+                        key=lambda f: agg_r.all_scores.get(f, 0.0),
+                        reverse=True,
+                    )
+
+                    # For Target Correlation: use signed Pearson r from corr_with_target
+                    # (raw_scores store |r| for scoring; corr_with_target stores signed r for display)
+                    is_corr_method = agg_r.method_id == "target_correlation"
+                    corr_lookup = (
+                        pt_result.corr_with_target
+                        if is_corr_method and not pt_result.corr_with_target.empty
+                        else None
+                    )
+
+                    rows = []
+                    for rank, feat in enumerate(all_scope_sorted, 1):
+                        row_dict: dict = {"Rank": rank, "Feature": feat}
+                        for y_col in y_cols_ordered:
+                            if is_corr_method and corr_lookup is not None:
+                                # Signed Pearson r — shows direction of relationship
+                                val = (
+                                    corr_lookup.loc[feat, y_col]
+                                    if feat in corr_lookup.index and y_col in corr_lookup.columns
+                                    else None
+                                )
+                                row_dict[y_col] = round(float(val), 4) if val is not None else None
+                            elif y_col in t_method:
+                                row_dict[y_col] = round(t_method[y_col].raw_scores.get(feat, 0.0), 5)
+                            else:
+                                row_dict[y_col] = None
+                        row_dict["Avg |r|" if is_corr_method else "Avg Score"] = round(agg_r.raw_scores.get(feat, 0.0), 5)
+                        row_dict["Norm Score"] = round(agg_r.all_scores.get(feat, 0.0), 4)
+                        rows.append(row_dict)
+
+                    if rows:
+                        st.dataframe(pd.DataFrame(rows), use_container_width=True, height=420)
+                        if is_corr_method:
+                            st.caption(
+                                "Y columns show signed Pearson r (+/– indicates direction).  "
+                                "Avg |r| = mean absolute correlation across targets (used in scoring).  "
+                                "Norm Score = normalised 0–1 (used in Final Score)."
+                            )
+                        else:
+                            st.caption(
+                                f"Each Y column shows the raw score for that target run.  "
+                                f"Avg Score = mean raw score across {n_ran} target(s).  "
+                                f"Norm Score = normalised 0–1 (used in Final Score)."
+                            )
+
+        else:
+            # ----------------------------------------------------------------
+            # Single-Y path: original behaviour unchanged.
+            # ----------------------------------------------------------------
+            st.caption(
+                "Methods that train per Y target show individual raw scores alongside "
+                "the averaged raw score and normalized score. Methods that reduce to a "
+                "single averaged Y (Permutation, mRMR) show only Avg Raw and Norm Score."
+            )
+            for r in result.method_results:
+                status = "✅" if r.success else "❌"
+                with st.expander(f"{status} **{r.name}** — {r.category}  |  {len(r.selected_features)} features  ({r.notes})"):
+                    if not r.success:
+                        st.error(r.notes)
+                        continue
+                    has_per_y = bool(r.per_target_scores)
+                    if has_per_y:
+                        sample_feat = r.selected_features[0] if r.selected_features else None
+                        y_col_names = list(r.per_target_scores.get(sample_feat, {}).keys()) if sample_feat else []
+                    else:
+                        y_col_names = []
+                    is_corr = r.method_id == "target_correlation"
+                    signed_corr = result.corr_with_target if is_corr and not result.corr_with_target.empty else None
+                    rows = []
+                    for rank, feat in enumerate(r.selected_features, 1):
+                        row_dict: dict = {"Rank": rank, "Feature": feat}
+                        if is_corr and signed_corr is not None:
+                            for yc in signed_corr.columns:
+                                val = signed_corr.loc[feat, yc] if feat in signed_corr.index else None
+                                row_dict[yc] = round(float(val), 4) if val is not None else None
+                            row_dict["Avg |r|"] = round(r.raw_scores.get(feat, 0), 5)
+                        else:
+                            if has_per_y and y_col_names:
+                                for yc in y_col_names:
+                                    row_dict[f"{yc} Raw"] = round(r.per_target_scores.get(feat, {}).get(yc, 0.0), 5)
+                            row_dict["Avg Raw"] = round(r.raw_scores.get(feat, 0), 5)
+                        row_dict["Norm Score"] = round(r.all_scores.get(feat, 0), 4)
+                        rows.append(row_dict)
+                    if rows:
+                        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+                        if is_corr:
+                            st.caption("Y column shows signed Pearson r. Avg |r| = absolute correlation (used in scoring).")
 
     if tab6 is not None and pt_result is not None:
         with tab6:
