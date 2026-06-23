@@ -1560,10 +1560,16 @@ def _aggregate_from_per_target_results(
         coverage_ratio = coverage_count / n_targets
         coverage_pct   = coverage_ratio * 100.0
 
-        # --- Predictive Strength: nanmean of per-target PS ---
-        ps_vals: List[float] = []
-        for y_col, res in target_results.items():
-            ps_vals.append(_get_ps(res.consensus_df, feat))
+        # --- Predictive Strength: nanmean over SELECTED targets only ---
+        # Only targets that recommended this feature (HR or Rec) contribute to PS.
+        # Targets that rejected the feature are excluded — otherwise their low PS
+        # dilutes the true predictive signal for the targets that actually need it.
+        # For optional_union (Consider-only) features, feature_target_map still lists
+        # the targets that gave them Consider, so we use those.
+        relevant_targets = feature_target_map.get(feat, list(target_results.keys()))
+        ps_vals: List[float] = [
+            _get_ps(target_results[y].consensus_df, feat) for y in relevant_targets
+        ]
         ps = float(np.nanmean(ps_vals)) if ps_vals else 0.0
 
         # --- Per-target AvgRank (informational) ---
