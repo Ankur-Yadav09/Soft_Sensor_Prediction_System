@@ -205,8 +205,30 @@ THEME_CSS: str = """
 
     /* Sidebar Styling */
     [data-testid="stSidebar"] {
-        background-color: #0f172a !important;
-        border-right: 1px solid rgba(255, 255, 255, 0.05) !important;
+        background: linear-gradient(180deg, #0f2a52 0%, #163660 50%, #0f2a52 100%) !important;
+        border-right: 1px solid rgba(77, 166, 255, 0.20) !important;
+    }
+
+    /* Strip all white backgrounds from Streamlit sidebar wrappers */
+    [data-testid="stSidebar"] section,
+    [data-testid="stSidebar"] [data-testid="stVerticalBlock"],
+    [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"],
+    [data-testid="stSidebar"] [data-testid="stElementContainer"],
+    [data-testid="stSidebar"] iframe,
+    [data-testid="stSidebar"] ul,
+    [data-testid="stSidebar"] li,
+    [data-testid="stSidebar"] .nav {
+        background-color: transparent !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+
+    /* Active nav icon turns bright white */
+    [data-testid="stSidebar"] [aria-selected="true"] svg,
+    [data-testid="stSidebar"] [aria-selected="true"] i {
+        color: #ffffff !important;
+        opacity: 1 !important;
     }
 
     .st-emotion-cache-16idsys p {
