@@ -143,7 +143,7 @@ PS is averaged **only over the targets that selected the feature**, not all targ
 
 ---
 
-## Phase 5 — Final Score Computation
+## Phase 5 — Final Score Computation (unchanged)
 
 Four components combine into the Final Score:
 
@@ -171,6 +171,79 @@ FinalScore = 0.25 × SelectionFreq  +  0.40 × PredictiveStrength
 
 > SelectionFreq is dampened: `adjusted = Coverage% × max(PS, 25) / 100`
 > This prevents a weak feature from reaching high FinalScore purely through high coverage.
+
+---
+
+## Phase 6 — Multicollinearity Deduplication (new)
+
+After all scores and recommendations are assigned, a **post-scoring deduplication pass** runs on the final consensus DataFrame. This prevents two features that measure essentially the same thing from both landing in the Recommended list.
+
+### Why This Is Needed
+
+Every scoring method evaluates features independently. If `DMCTF_Feed` and `CHG_GAS_FLOW_TO_DRYER` are correlated at r=0.9746, both can independently score high on PS and SelectionFreq and both land as Recommended — even though including both adds no information to the model.
+
+The Overview tab already *detects* these pairs. Phase 6 *acts* on them.
+
+### How It Works
+
+**Input:** The final consensus DataFrame + X–X correlation matrix + `corr_threshold` (set in UI, default 0.85)
+
+**Step 1 — Collect pairs**
+
+Scan the X–X correlation matrix for all pairs of Recommended / Highly Recommended features where |r| > corr_threshold. Sort pairs by |r| descending (most redundant first).
+
+**Step 2 — Greedy resolution**
+
+Walk the sorted list. For each pair (A, B) where both are still Recommended/HR:
+
+| Decision | Rule |
+|---|---|
+| **Winner** | Feature with higher FinalScore — already accounts for PS, FQ, Stability |
+| **Loser** | Downgraded from Recommended → **Consider** |
+| **Column stamped** | `MulticollinearWith` = "Winner (|r|=X.XXXX)" |
+| **Reasoning updated** | "Downgraded from Recommended: highly correlated with Winner (|r|=X.XXXX) — include only one of this pair." |
+
+If a feature was already downgraded in a prior pair, it is **skipped** in later pairs — it can only be a loser once.
+
+**Step 3 — Re-derive buckets**
+
+`recommended_features`, `optional_features`, `features_to_remove` are re-derived from the deduped DataFrame. Quick-apply "Use Recommended" draws from this final list.
+
+### Example — Your Dataset
+
+| Pair | |r| | Winner | Loser → |
+|---|---|---|---|
+| K1301 vs Quench tower overhead temp | 0.9998 | K1301 (higher score) | Quench → Consider |
+| K1301 vs Top Reflux Temp | 0.9990 | K1301 | Top Reflux → Consider |
+| Quench vs Top Reflux Temp | 0.9986 | — | **Skipped** (Quench already downgraded) |
+| DMCTF_Feed vs CHG_GAS_FLOW_TO_DRYER | 0.9746 | DMCTF_Feed (higher score) | CHG → Consider |
+
+**Result in Tab2:**
+
+| Feature | Recommendation | MulticollinearWith |
+|---|---|---|
+| DMCTF_Feed | 🔵 Recommended | — |
+| CHG_GAS_FLOW_TO_DRYER | 🟡 Consider | DMCTF_Feed (\|r\|=0.9746) |
+| K1301_1ST_STG_SUCT_TEMP | 🟢 Highly Recommended | — |
+| Quench tower overhead temp | 🟡 Consider | K1301_1ST_STG_SUCT_TEMP (\|r\|=0.9998) |
+| Top Reflux Temp | 🟡 Consider | K1301_1ST_STG_SUCT_TEMP (\|r\|=0.9990) |
+
+### Where It Runs
+
+| Scenario | Where dedup runs |
+|---|---|
+| **Single-Y** | Once, inside `run_auto_feature_selection()` after consensus is built |
+| **Multi-Y** | Once, inside `run_per_target_auto_selection()` after the aggregate consensus is built. Per-target sub-runs do NOT run dedup — this keeps union/coverage calculation clean. |
+
+### Key Design Decisions
+
+| Decision | Reason |
+|---|---|
+| Downgrade to **Consider**, not **Remove** | The feature is still predictive — just redundant given its correlated partner. User can still manually include it. |
+| Keep **higher FinalScore** as winner | FinalScore already encodes PS + FQ + Stability — it's the best composite proxy for "better representative" |
+| **Greedy from highest |r| first** | Resolves the most redundant pairs first; a downgraded feature is never reconsidered |
+| **Only Recommended/HR** scanned | Consider and Weak Feature are already below the bar — no need to further downgrade |
+| Uses **user's corr_threshold** | Same threshold shown in the UI Overview pair table — consistent and transparent |
 
 ---
 
@@ -295,6 +368,39 @@ The specialist is rescued regardless of how many total targets exist.
 
 ---
 
+### Scenario 9 — Multicollinear Pair in Recommended List
+
+> **DMCTF_Feed** (FinalScore=68) and **CHG_GAS_FLOW_TO_DRYER** (FinalScore=62), |r|=0.9746
+
+Both features independently scored above the Recommended threshold. Without deduplication, both would land in the "Use Recommended" list even though they carry nearly identical information.
+
+**Phase 5 output (before dedup):**
+
+| Feature | PS | FinalScore | Recommendation |
+|---|---|---|---|
+| DMCTF_Feed | 72 | 68.0 | 🔵 Recommended |
+| CHG_GAS_FLOW_TO_DRYER | 65 | 62.0 | 🔵 Recommended |
+
+**Phase 6 dedup pass:**
+
+| Step | Action |
+|---|---|
+| Pair detected | DMCTF_Feed ↔ CHG_GAS_FLOW_TO_DRYER, \|r\|=0.9746 > threshold(0.85) |
+| Winner | DMCTF_Feed — higher FinalScore (68 > 62) |
+| Loser downgraded | CHG_GAS_FLOW_TO_DRYER → Consider |
+| Column stamped | `MulticollinearWith` = "DMCTF_Feed (\|r\|=0.9746)" |
+
+**Phase 6 output (after dedup):**
+
+| Feature | FinalScore | Recommendation | MulticollinearWith |
+|---|---|---|---|
+| DMCTF_Feed | 68.0 | 🔵 Recommended | — |
+| CHG_GAS_FLOW_TO_DRYER | 62.0 | 🟡 Consider | DMCTF_Feed (\|r\|=0.9746) |
+
+**Why it works:** The user can include CHG_GAS_FLOW_TO_DRYER manually if domain knowledge requires it, but the default "Use Recommended" set is clean — no redundant pair.
+
+---
+
 ## Final Recommendation Summary
 
 | Recommendation | Criteria |
@@ -317,8 +423,10 @@ The specialist is rescued regardless of how many total targets exist.
 | `_compute_predictive_strength()` | Unchanged — called per target |
 | `_compute_feature_quality()` | Unchanged — VIF + missing + variance on full X |
 | `_compute_stability_score()` | Unchanged — bootstrap on full X/Y |
-| `_assign_recommendation()` | Unchanged — same thresholds |
-| `_generate_reasoning()` | Unchanged — uses best-target method results |
-| Single-Y path | Unchanged — uses `run_auto_feature_selection` directly |
+| `_assign_recommendation()` | Unchanged — same thresholds, called before dedup |
+| `_generate_reasoning()` | Unchanged — uses best-target method results; dedup appends a note |
+| `_dedup_multicollinear()` | **New** — post-scoring pass; does NOT change scores, only Recommendation + MulticollinearWith column |
+| Single-Y path | Unchanged — uses `run_auto_feature_selection` directly (dedup runs once at end) |
 | All UI tabs | Unchanged — tab2, tab3, tab4, tab5 work via pseudo AutoSelectionResult |
+| Tab2 | Enhanced — now shows `MulticollinearWith` column for downgraded features |
 | Tab6 | Enhanced — now shows per-target PS breakdown table |
