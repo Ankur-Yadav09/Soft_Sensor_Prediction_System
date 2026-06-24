@@ -641,7 +641,9 @@ def _render_automated_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -
         f"<p style='color:{_MUTED};font-size:0.88rem'>"
         "Best-default pipeline: <b style='color:#f8fafc'>Cast to numeric</b> → "
         "<b style='color:#f8fafc'>Remove duplicates</b> → "
+        "<b style='color:#f8fafc'>Drop high-missing columns (≥50%)</b> → "
         "<b style='color:#f8fafc'>Remove constant columns</b> → "
+        "<b style='color:#f8fafc'>Remove near-zero variance columns (std&lt;0.01)</b> → "
         "<b style='color:#f8fafc'>Median imputation</b> → "
         "<b style='color:#f8fafc'>IQR capping (1.5×)</b>"
         "</p>",
@@ -664,12 +666,22 @@ def _render_automated_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -
 
         working = cast_to_numeric(st.session_state.df).copy()
         n_rows_start = len(working)
-        _log(f"✅ **Cast to numeric** — {working.shape[1]} columns processed.", 0.20)
+        _log(f"✅ **Cast to numeric** — {working.shape[1]} columns processed.", 0.14)
 
         n_before = len(working)
         working = working.drop_duplicates().reset_index(drop=True)
         n_dupes = n_before - len(working)
-        _log(f"✅ **Remove duplicates** — {n_dupes} duplicate row(s) removed.", 0.35)
+        _log(f"✅ **Remove duplicates** — {n_dupes} duplicate row(s) removed.", 0.28)
+
+        auto_num_cols = working.select_dtypes(include=[np.number]).columns.tolist()
+        miss_auto = [c for c in auto_num_cols if working[c].isnull().mean() >= 0.50]
+        if miss_auto:
+            working = working.drop(columns=miss_auto)
+        _log(
+            f"✅ **Drop high-missing columns (≥50%)** — {len(miss_auto)} column(s) removed"
+            + (f": `{', '.join(miss_auto)}`" if miss_auto else " (none found)") + ".",
+            0.42,
+        )
 
         auto_num_cols = working.select_dtypes(include=[np.number]).columns.tolist()
         const_auto = [c for c in auto_num_cols if working[c].std() == 0]
@@ -678,7 +690,17 @@ def _render_automated_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -
         _log(
             f"✅ **Remove constant columns** — {len(const_auto)} column(s) removed"
             + (f": `{', '.join(const_auto)}`" if const_auto else " (none found)") + ".",
-            0.55,
+            0.56,
+        )
+
+        auto_num_cols = working.select_dtypes(include=[np.number]).columns.tolist()
+        nzv_auto = [c for c in auto_num_cols if 0 < working[c].std() < 0.01]
+        if nzv_auto:
+            working = working.drop(columns=nzv_auto)
+        _log(
+            f"✅ **Remove near-zero variance columns (std < 0.01)** — {len(nzv_auto)} column(s) removed"
+            + (f": `{', '.join(nzv_auto)}`" if nzv_auto else " (none found)") + ".",
+            0.70,
         )
 
         n_filled = 0
@@ -688,7 +710,7 @@ def _render_automated_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -
                 if n_miss > 0:
                     working[col] = working[col].fillna(working[col].median())
                     n_filled += n_miss
-        _log(f"✅ **Median imputation** — {n_filled} missing value(s) filled across {working.shape[1]} columns.", 0.75)
+        _log(f"✅ **Median imputation** — {n_filled} missing value(s) filled across {working.shape[1]} columns.", 0.84)
 
         n_capped = 0
         for col in [c for c in working.select_dtypes(include=[np.number]).columns]:
@@ -699,7 +721,7 @@ def _render_automated_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -
             n = int(((s < lo) | (s > hi)).sum())
             working[col] = s.clip(lo, hi)
             n_capped += n
-        _log(f"✅ **IQR capping (1.5×)** — {n_capped} value(s) capped across all numeric columns.", 0.95)
+        _log(f"✅ **IQR capping (1.5×)** — {n_capped} value(s) capped across all numeric columns.", 0.98)
 
         progress_bar.progress(1.0)
         st.session_state.df = working

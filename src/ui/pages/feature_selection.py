@@ -386,6 +386,21 @@ def _render_analysis_results(
                 f"(zero variance): `{', '.join(info['constant_features'])}`"
             )
 
+        if info.get("vif_skipped"):
+            st.warning(
+                "**VIF computation skipped** — dataset has more than 80 features. "
+                "The Highly Recommended hard gate (VIF < 10) is inactive: a multicollinear feature "
+                "can still reach Highly Recommended on this dataset. "
+                "Consider reducing features in Preprocessing first."
+            )
+
+        if info.get("permutation_skipped"):
+            st.warning(
+                "**Permutation Importance skipped** — dataset has more than 100 features. "
+                "Its 30% weight has been redistributed proportionally across the remaining 4 methods. "
+                "Scores are still valid but specialist/nonlinear features may be under-scored."
+            )
+
         st.markdown("#### Method Execution Summary")
         method_rows = [
             {"Method": r.name, "Category": r.category,
@@ -1200,11 +1215,13 @@ def render() -> None:
             "Runs all available methods with best-default parameters in one click.",
         )
 
-        auto_top_k = min(10, n_feat)
+        # Scale top_k with dataset width: larger feature sets need a wider top-k
+        # so SelectionFreq remains meaningful. Cap at 30 to keep compute time reasonable.
+        auto_top_k = min(max(10, n_feat // 5), 30)
         st.markdown(
             f"<p style='color:{_MUTED};font-size:0.88rem'>"
             f"Will run <b style='color:#f8fafc'>{len(avail_methods)}</b> independent scoring method(s) &nbsp;|&nbsp; "
-            f"Top-K = <b style='color:#f8fafc'>{auto_top_k}</b> &nbsp;|&nbsp; "
+            f"Top-K = <b style='color:#f8fafc'>{auto_top_k}</b> (auto-scaled to feature count) &nbsp;|&nbsp; "
             f"Collinearity threshold = <b style='color:#f8fafc'>0.85</b> &nbsp;|&nbsp; "
             f"VIF threshold = <b style='color:#f8fafc'>10.0</b>"
             "</p>",

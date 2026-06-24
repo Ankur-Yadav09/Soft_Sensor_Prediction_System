@@ -533,12 +533,20 @@ def _m_mrmr(
         ]
         relevance = np.mean(mi_matrix, axis=0)  # shape (n_features,)
 
-        # Greedy mRMR selection
+        # Precompute MI between every pair of X features for the redundancy term.
+        # Using MI (not Pearson) catches nonlinear redundancy — two sensors that
+        # are functionally equivalent but not linearly correlated are correctly
+        # penalised. MI(Xi, Xj) is symmetric so we compute upper-triangle only.
         n_feat = len(names)
+        mi_xx = np.zeros((n_feat, n_feat))
+        for i in range(n_feat):
+            mi_row = mutual_info_regression(X, X[:, i], random_state=42)
+            mi_xx[i] = mi_row
+            mi_xx[:, i] = mi_row  # symmetric
+
+        # Greedy mRMR selection
         selected_idx: List[int] = []
         remaining_idx = list(range(n_feat))
-
-        corr_matrix = np.corrcoef(X.T)  # (n_feat, n_feat)
 
         for _ in range(min(top_k, n_feat)):
             if not remaining_idx:
@@ -549,7 +557,8 @@ def _m_mrmr(
             else:
                 scores = []
                 for i in remaining_idx:
-                    redundancy = float(np.mean([abs(corr_matrix[i, s]) for s in selected_idx]))
+                    # Redundancy = mean MI between candidate and already-selected features
+                    redundancy = float(np.mean([mi_xx[i, s] for s in selected_idx]))
                     scores.append(relevance[i] - redundancy)
                 best = int(np.argmax(scores))
                 best_idx = remaining_idx[best]
@@ -563,7 +572,7 @@ def _m_mrmr(
 
         return _build_result(
             "mrmr", raw, names, top_k,
-            notes=f"Greedy mRMR, relevance–redundancy, {y2.shape[1]} target(s)",
+            notes=f"Greedy mRMR, MI relevance + MI redundancy, {y2.shape[1]} target(s)",
         )
     except Exception as e:
         return _failed("mrmr", names, top_k, str(e))
@@ -579,21 +588,27 @@ def _m_permutation_importance(
     try:
         y2 = _to_2d(y)
         Xs, ys = _sample(X, y2, _MAX_ROWS_WRAPPER)
-        y_avg = _avg_y(ys)
+        n_targets = ys.shape[1]
 
-        rf = RandomForestRegressor(
-            n_estimators=50, max_features=0.5, random_state=42, n_jobs=-1
-        )
-        rf.fit(Xs, y_avg)
+        # Train one RF per Y target and average importances so that a feature
+        # which is a specialist for one target is not diluted by the others.
+        # Averaging Y before fitting would compress a high-importance specialist
+        # feature's signal by 1/n_targets.
+        all_importances = []
+        for j in range(n_targets):
+            rf_j = RandomForestRegressor(
+                n_estimators=50, max_features=0.5, random_state=42, n_jobs=-1
+            )
+            rf_j.fit(Xs, ys[:, j])
+            perm_j = _sklearn_perm_importance(rf_j, Xs, ys[:, j], n_repeats=5, random_state=42)
+            all_importances.append(np.maximum(perm_j.importances_mean, 0.0))
 
-        perm = _sklearn_perm_importance(rf, Xs, y_avg, n_repeats=5, random_state=42)
-        importances = perm.importances_mean
-        importances = np.maximum(importances, 0.0)
+        importances = np.mean(all_importances, axis=0)
 
         raw = {feat: float(importances[i]) for i, feat in enumerate(names)}
         return _build_result(
             "permutation_importance", raw, names, top_k,
-            notes="RF base model, 5 repeats, mean importance",
+            notes=f"RF per target ({n_targets}), 5 repeats, mean importance",
         )
     except Exception as e:
         return _failed("permutation_importance", names, top_k, str(e))
@@ -763,12 +778,15 @@ def _compute_stability_score(
     Bootstrap Stability Score (0-100)
 
     Measures how consistently a feature is selected across
-    multiple bootstrap samples.
+    multiple bootstrap samples using 3 diverse methods:
+      - Target Correlation (linear association)
+      - Mutual Information (nonlinear association)
+      - Elastic Net (regularised necessity)
 
-    Improvements:
-    - 6-method ensemble
-    - 60% consensus threshold
-    - Rank-weighted selection
+    Diversity matters: Corr + MI + EN span three different selection
+    philosophies so their consensus reflects genuine robustness, not
+    just shared correlation-with-target signal.
+    60% consensus threshold (≥2/3 votes) + rank-weighted scoring.
     """
 
     try:
@@ -809,14 +827,17 @@ def _compute_stability_score(
 
             method_results = []
 
-            # Use three fast methods for bootstrap stability estimation.
-            # RF importance is included here (not a scoring method) because it
-            # is fast and provides a complementary tree-based signal for the
-            # stability consensus without inflating the main scoring counts.
+            # Three bootstrap methods chosen for signal diversity:
+            #   Corr  — linear association (fast, stable)
+            #   MI    — nonlinear association (information-theoretic)
+            #   EN    — regularised necessity (different selection philosophy)
+            # Replacing RF Importance (which agreed with Corr+MI most of the time)
+            # with Elastic Net gives genuinely independent votes and reduces
+            # inflation of stability scores for merely correlated features.
             methods = [
                 lambda: _m_target_correlation(Xb, yb, names, k),
                 lambda: _m_mutual_information(Xb, yb, names, k),
-                lambda: _m_rf_importance(Xb, yb, names, k),
+                lambda: _m_elasticnet(Xb, yb, names, k),
             ]
 
             for fn in methods:
@@ -1407,6 +1428,7 @@ def run_auto_feature_selection(
 
     # ---- 2. Dataset info -------------------------------------------------
     info = _analyze_dataset_info(X_df, y_df, X_clean)
+    info["vif_skipped"] = len(names) > _MAX_FEATURES_VIF
 
     # ---- 3. Structural analyses (non-voting) ----------------------------
     _progress("Computing correlation matrix…")
@@ -1435,6 +1457,8 @@ def run_auto_feature_selection(
         # skip only when the feature space is very large.
         if len(names) <= _MAX_FEATURES_NEW:
             enabled_methods.append("permutation_importance")
+
+    info["permutation_skipped"] = "permutation_importance" not in enabled_methods
 
     y_names: List[str] = y_filled.columns.tolist()
 
