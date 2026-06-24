@@ -287,7 +287,7 @@ def _render_basic_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -> No
 
     # ---- Tab 1: Remove Records
     with tab_remove:
-        st.markdown("#### Remove Records")
+        st.markdown("#### Remove Rows")
         c1, c2 = st.columns(2)
         with c1:
             remove_missing = st.checkbox("Remove rows with **any** missing values", key="bp_rm_missing")
@@ -297,6 +297,55 @@ def _render_basic_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -> No
             remove_dupes = st.checkbox("Remove **duplicate** records", key="bp_rm_dupes")
             if remove_dupes:
                 st.caption(f"Will remove **{int(df.duplicated().sum())}** duplicate row(s).")
+
+        st.markdown("---")
+        st.markdown("#### Remove Columns")
+
+        _const_cols = [c for c in numeric_cols if df[c].std() == 0]
+
+        c3, _ = st.columns(2)
+        with c3:
+            remove_const_cols = st.checkbox(
+                "Remove **constant** columns (std = 0)",
+                key="bp_rm_const_cols",
+                help="Drops columns where every row has the same value, including all-zero columns — these carry no predictive information.",
+            )
+            if remove_const_cols:
+                if _const_cols:
+                    st.caption(
+                        f"Will remove **{len(_const_cols)}** column(s): `{', '.join(_const_cols)}`"
+                    )
+                else:
+                    st.caption("No constant columns found in the dataset.")
+
+        st.markdown("")
+        c5, c6 = st.columns([1, 2])
+        with c5:
+            remove_nzv_cols = st.checkbox(
+                "Remove **near-zero variance** columns",
+                key="bp_rm_nzv_cols",
+                help="Drops columns whose std is above 0 but below the threshold — barely varying sensors add noise without signal.",
+            )
+        with c6:
+            nzv_threshold = st.number_input(
+                "Std threshold",
+                min_value=0.0001, max_value=1.0, value=0.01, step=0.001,
+                format="%.4f", key="bp_nzv_thr",
+                help="Columns with std < this value are considered near-zero variance.",
+                disabled=not st.session_state.get("bp_rm_nzv_cols", False),
+            )
+        if remove_nzv_cols:
+            _nzv_cols = [
+                c for c in numeric_cols
+                if 0 < df[c].std() < nzv_threshold
+            ]
+            if _nzv_cols:
+                st.caption(
+                    f"Will remove **{len(_nzv_cols)}** near-zero variance column(s) "
+                    f"(std < {nzv_threshold}): `{', '.join(_nzv_cols)}`"
+                )
+            else:
+                st.caption(f"No columns with 0 < std < {nzv_threshold} found.")
 
     # ---- Tab 2: Missing Values
     with tab_impute:
@@ -405,6 +454,10 @@ def _render_basic_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -> No
         active_steps.append("Remove missing rows")
     if st.session_state.get("bp_rm_dupes"):
         active_steps.append("Remove duplicates")
+    if st.session_state.get("bp_rm_const_cols"):
+        active_steps.append("Remove constant columns")
+    if st.session_state.get("bp_rm_nzv_cols"):
+        active_steps.append(f"Remove NZV columns (std < {st.session_state.get('bp_nzv_thr', 0.01)})")
     if st.session_state.get("bp_impute_method", "None") != "None":
         active_steps.append(f"Impute: {st.session_state.get('bp_impute_method')}")
     if st.session_state.get("bp_outlier_method", "None") != "None":
@@ -439,6 +492,28 @@ def _render_basic_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -> No
             n_before = len(working)
             working = working.drop_duplicates().reset_index(drop=True)
             action_log.append(f"Removed **{n_before - len(working)}** duplicate row(s).")
+
+        if st.session_state.get("bp_rm_const_cols"):
+            num_cols_now = working.select_dtypes(include=[np.number]).columns.tolist()
+            const_drop = [c for c in num_cols_now if working[c].std() == 0]
+            if const_drop:
+                working = working.drop(columns=const_drop)
+                action_log.append(
+                    f"Removed **{len(const_drop)}** constant column(s) (std = 0): `{', '.join(const_drop)}`."
+                )
+
+        if st.session_state.get("bp_rm_nzv_cols"):
+            _nzv_thr = float(st.session_state.get("bp_nzv_thr", 0.01))
+            nzv_drop = [
+                c for c in working.select_dtypes(include=[np.number]).columns
+                if 0 < working[c].std() < _nzv_thr
+            ]
+            if nzv_drop:
+                working = working.drop(columns=nzv_drop)
+                action_log.append(
+                    f"Removed **{len(nzv_drop)}** near-zero variance column(s) "
+                    f"(std < {_nzv_thr}): `{', '.join(nzv_drop)}`."
+                )
 
         _imp_method = st.session_state.get("bp_impute_method", "None")
         if _imp_method != "None":
@@ -522,6 +597,7 @@ def _render_automated_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -
         f"<p style='color:{_MUTED};font-size:0.88rem'>"
         "Best-default pipeline: <b style='color:#f8fafc'>Cast to numeric</b> → "
         "<b style='color:#f8fafc'>Remove duplicates</b> → "
+        "<b style='color:#f8fafc'>Remove constant columns</b> → "
         "<b style='color:#f8fafc'>Median imputation</b> → "
         "<b style='color:#f8fafc'>IQR capping (1.5×)</b>"
         "</p>",
@@ -549,19 +625,29 @@ def _render_automated_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -
         n_before = len(working)
         working = working.drop_duplicates().reset_index(drop=True)
         n_dupes = n_before - len(working)
-        _log(f"✅ **Remove duplicates** — {n_dupes} duplicate row(s) removed.", 0.40)
+        _log(f"✅ **Remove duplicates** — {n_dupes} duplicate row(s) removed.", 0.35)
+
+        auto_num_cols = working.select_dtypes(include=[np.number]).columns.tolist()
+        const_auto = [c for c in auto_num_cols if working[c].std() == 0]
+        if const_auto:
+            working = working.drop(columns=const_auto)
+        _log(
+            f"✅ **Remove constant columns** — {len(const_auto)} column(s) removed"
+            + (f": `{', '.join(const_auto)}`" if const_auto else " (none found)") + ".",
+            0.55,
+        )
 
         n_filled = 0
-        for col in numeric_cols:
+        for col in working.select_dtypes(include=[np.number]).columns:
             if col in working.columns:
                 n_miss = int(working[col].isnull().sum())
                 if n_miss > 0:
                     working[col] = working[col].fillna(working[col].median())
                     n_filled += n_miss
-        _log(f"✅ **Median imputation** — {n_filled} missing value(s) filled across {working.shape[1]} columns.", 0.65)
+        _log(f"✅ **Median imputation** — {n_filled} missing value(s) filled across {working.shape[1]} columns.", 0.75)
 
         n_capped = 0
-        for col in [c for c in numeric_cols if c in working.columns]:
+        for col in [c for c in working.select_dtypes(include=[np.number]).columns]:
             s = working[col]
             q1, q3 = s.quantile(0.25), s.quantile(0.75)
             iqr = q3 - q1
@@ -569,7 +655,7 @@ def _render_automated_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -
             n = int(((s < lo) | (s > hi)).sum())
             working[col] = s.clip(lo, hi)
             n_capped += n
-        _log(f"✅ **IQR capping (1.5×)** — {n_capped} value(s) capped across all numeric columns.", 0.90)
+        _log(f"✅ **IQR capping (1.5×)** — {n_capped} value(s) capped across all numeric columns.", 0.95)
 
         progress_bar.progress(1.0)
         st.session_state.df = working
