@@ -425,7 +425,7 @@ def _render_analysis_results(
             "Feature",
             "CoverageCount", "CoverageRatio", "CoveragePercent",   # multi-Y coverage (absent for single-Y)
             "SelectionCount", "TotalMethods", "SelectionFreq",
-            "AvgRank", "PredictiveStrength", "FeatureQuality", "StabilityScore", "FinalScore",
+            "AvgRank", "PredictiveStrength", "StabilityScore", "FinalScore",
             "CorrWithTarget", "VIF",
             "ElasticNetSelected", "Recommendation", "MulticollinearWith",
         ]

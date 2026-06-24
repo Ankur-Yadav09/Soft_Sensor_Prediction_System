@@ -88,19 +88,21 @@ FS_PS_EN_WEIGHT:    float = 0.10   # Elastic Net
 FS_MULTI_Y_PS_SCALE: float = 0.08
 
 # Recommendation thresholds
-FS_HIGHLY_REC_MIN_FINAL:          float = 80.0
-FS_HIGHLY_REC_MIN_PRED_STRENGTH:  float = 70.0
-FS_HIGHLY_REC_MIN_QUALITY:        float = 60.0
+# Lowered by ~10-12 pts to compensate for FQ removal from FinalScore (~15pt average contribution).
+# FQ quality gates removed from logic; VIF still enforced as a hard gate for Highly Recommended.
+FS_HIGHLY_REC_MIN_FINAL:          float = 70.0
+FS_HIGHLY_REC_MIN_PRED_STRENGTH:  float = 65.0
+FS_HIGHLY_REC_MIN_QUALITY:        float = 60.0   # unused in logic; kept for import compatibility
 FS_HIGHLY_REC_MAX_VIF:            float = 10.0
 
-FS_RECOMMENDED_MIN_FINAL:         float = 60.0
-FS_RECOMMENDED_MIN_PRED_STRENGTH: float = 50.0
-FS_RECOMMENDED_MIN_QUALITY:       float = 40.0
+FS_RECOMMENDED_MIN_FINAL:         float = 50.0
+FS_RECOMMENDED_MIN_PRED_STRENGTH: float = 45.0
+FS_RECOMMENDED_MIN_QUALITY:       float = 40.0   # unused in logic; kept for import compatibility
 
-FS_CONSIDER_MIN_FINAL:            float = 40.0
+FS_CONSIDER_MIN_FINAL:            float = 35.0
 
 FS_WEAK_MAX_PRED_STRENGTH:        float = 30.0
-FS_WEAK_MAX_QUALITY:               float = 20.0
+FS_WEAK_MAX_QUALITY:               float = 20.0   # unused in logic; kept for import compatibility
 
 # Stability bootstrap
 FS_STABILITY_RUNS:       int   = 20

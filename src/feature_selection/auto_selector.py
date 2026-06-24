@@ -904,32 +904,35 @@ def _assign_recommendation(
     final: float, pred_strength: float, quality: float, vif: Optional[float], correlation: float,
     n_targets: int = 1,
 ) -> str:
-    """Multi-condition recommendation assignment with quality gate.
+    """Multi-condition recommendation assignment.
 
-    PS thresholds scale down gently with additional Y targets to compensate
-    for score compression from cross-target averaging (FS_MULTI_Y_PS_SCALE).
+    FQ quality gates removed — missing/variance handled upstream in preprocessing.
+    VIF is retained as the sole data-health gate for Highly Recommended.
+    PS thresholds scale down gently with additional Y targets (FS_MULTI_Y_PS_SCALE).
     FS_WEAK_MAX_PRED_STRENGTH is intentionally not scaled — truly weak stays weak.
     """
     scale = 1.0 - FS_MULTI_Y_PS_SCALE * min(max(n_targets - 1, 0), 4)
-    effective_highly_rec_ps  = FS_HIGHLY_REC_MIN_PRED_STRENGTH  * scale
+    effective_highly_rec_ps  = FS_HIGHLY_REC_MIN_PRED_STRENGTH * scale
     effective_recommended_ps = FS_RECOMMENDED_MIN_PRED_STRENGTH * scale
 
     vif_val = np.inf if vif is None or np.isnan(vif) else float(vif)
+
+    # Minimum signal floor — no target correlation and very low PS → Weak Feature
     if abs(correlation) < 0.05 and pred_strength < 50:
         return "Weak Feature"
 
-    if (pred_strength < FS_WEAK_MAX_PRED_STRENGTH or quality < FS_WEAK_MAX_QUALITY):
+    # PS floor — truly weak predictive signal
+    if pred_strength < FS_WEAK_MAX_PRED_STRENGTH:
         return "Weak Feature"
 
     if (
         final >= FS_HIGHLY_REC_MIN_FINAL
         and pred_strength >= effective_highly_rec_ps
-        and quality >= FS_HIGHLY_REC_MIN_QUALITY
         and vif_val < FS_HIGHLY_REC_MAX_VIF
     ):
         return "Highly Recommended"
 
-    if (final >= FS_RECOMMENDED_MIN_FINAL and pred_strength >= effective_recommended_ps and quality >= FS_RECOMMENDED_MIN_QUALITY):
+    if final >= FS_RECOMMENDED_MIN_FINAL and pred_strength >= effective_recommended_ps:
         return "Recommended"
 
     if final >= FS_CONSIDER_MIN_FINAL:
@@ -1105,7 +1108,6 @@ def _aggregate_consensus(
             "TotalMethods":         n_scoring,
             "SelectionFreq":        round(freq * 100, 1),
             "PredictiveStrength":   round(ps, 1),
-            "FeatureQuality":       round(fq, 1),
             "StabilityScore":       round(stab, 1),
             "FinalScore":           final_score,
             "ConfidenceScore":      final_score,   # kept for backward compat

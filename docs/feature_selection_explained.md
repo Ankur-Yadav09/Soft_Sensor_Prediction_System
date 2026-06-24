@@ -549,10 +549,10 @@ PredictiveStrength carries the highest weight (50%) because it directly encodes 
 
 | FinalScore | Typical outcome |
 |---|---|
-| ≥ 80 | Highly Recommended (if other gates pass) |
-| 60 – 79 | Recommended (if PS and FQ thresholds pass) |
-| 40 – 59 | Consider |
-| < 40 | Weak Feature |
+| ≥ 70 | Highly Recommended (if PS ≥ 65 and VIF < 10) |
+| 50 – 69 | Recommended (if PS ≥ 45) |
+| 35 – 49 | Consider |
+| < 35 | Weak Feature |
 
 ---
 
@@ -562,18 +562,20 @@ Recommendation is assigned by `_assign_recommendation()` using a **multi-gate** 
 
 ### Exact Thresholds (from `settings.py`)
 
-| Threshold constant | Value |
-|---|---|
-| `FS_HIGHLY_REC_MIN_FINAL` | 80.0 |
-| `FS_HIGHLY_REC_MIN_PRED_STRENGTH` | 70.0 |
-| `FS_HIGHLY_REC_MIN_QUALITY` | 60.0 |
-| `FS_HIGHLY_REC_MAX_VIF` | 10.0 |
-| `FS_RECOMMENDED_MIN_FINAL` | 60.0 |
-| `FS_RECOMMENDED_MIN_PRED_STRENGTH` | 50.0 |
-| `FS_RECOMMENDED_MIN_QUALITY` | 40.0 |
-| `FS_CONSIDER_MIN_FINAL` | 40.0 |
-| `FS_WEAK_MAX_PRED_STRENGTH` | 30.0 |
-| `FS_WEAK_MAX_QUALITY` | 20.0 |
+| Threshold constant | Value | Note |
+|---|---|---|
+| `FS_HIGHLY_REC_MIN_FINAL` | **70.0** | Was 80 before FQ removal |
+| `FS_HIGHLY_REC_MIN_PRED_STRENGTH` | **65.0** | Was 70 before FQ removal |
+| `FS_HIGHLY_REC_MAX_VIF` | 10.0 | Still enforced as hard gate |
+| `FS_RECOMMENDED_MIN_FINAL` | **50.0** | Was 60 before FQ removal |
+| `FS_RECOMMENDED_MIN_PRED_STRENGTH` | **45.0** | Was 50 before FQ removal |
+| `FS_CONSIDER_MIN_FINAL` | **35.0** | Was 40 before FQ removal |
+| `FS_WEAK_MAX_PRED_STRENGTH` | 30.0 | |
+| `FS_HIGHLY_REC_MIN_QUALITY` | 60.0 | **Unused** — FQ removed from logic |
+| `FS_RECOMMENDED_MIN_QUALITY` | 40.0 | **Unused** — FQ removed from logic |
+| `FS_WEAK_MAX_QUALITY` | 20.0 | **Unused** — FQ removed from logic |
+
+Thresholds were lowered by ~10–12 points to compensate for the removal of Feature Quality (FQ) from FinalScore. FQ was contributing an average of ~15 points (0.20 × 75 ≈ 15) to scores. Its quality sub-components (missing values, near-zero variance) are now handled upstream in Preprocessing, making the FQ contribution redundant.
 
 ### Decision Logic (evaluated in order)
 
@@ -581,29 +583,29 @@ Recommendation is assigned by `_assign_recommendation()` using a **multi-gate** 
 1. EARLY WEAK FEATURE GATES (override everything):
    if |avg_corr_with_target| < 0.05 AND PS < 50:
        → "Weak Feature"   (no linear signal and low predictive power)
-   if PS < 30 OR FQ < 20:
-       → "Weak Feature"   (minimum quality/strength floor)
+   if PS < 30:
+       → "Weak Feature"   (minimum predictive strength floor)
 
-2. HIGHLY RECOMMENDED (all 4 conditions must hold):
-   FinalScore  ≥ 80
-   PS          ≥ 70 × scale   (scale reduces for multi-Y, see below)
-   FQ          ≥ 60
+2. HIGHLY RECOMMENDED (all 3 conditions must hold):
+   FinalScore  ≥ 70
+   PS          ≥ 65 × scale   (scale reduces for multi-Y, see below)
    VIF         < 10
    → "Highly Recommended"
 
-3. RECOMMENDED (all 3 conditions must hold):
-   FinalScore  ≥ 60
-   PS          ≥ 50 × scale
-   FQ          ≥ 40
+3. RECOMMENDED (both conditions must hold):
+   FinalScore  ≥ 50
+   PS          ≥ 45 × scale
    → "Recommended"
 
 4. CONSIDER:
-   FinalScore  ≥ 40
+   FinalScore  ≥ 35
    → "Consider"
 
 5. DEFAULT:
    → "Weak Feature"
 ```
+
+**Note:** Feature Quality (FQ) gates (`FQ ≥ 60`, `FQ ≥ 40`, `FQ < 20`) have been removed. FQ sub-components (missing values, near-zero variance) are addressed in Preprocessing. Only the VIF hard gate remains for Highly Recommended — multicollinear features cannot reach the top tier regardless of FinalScore.
 
 ### Multi-Y PS Scaling
 
@@ -615,21 +617,22 @@ scale = 1.0 - 0.08 × min(n_targets - 1, 4)
 
 | n_targets | scale | Effective HR PS threshold | Effective Rec PS threshold |
 |---|---|---|---|
-| 1 | 1.00 | 70.0 | 50.0 |
-| 2 | 0.92 | 64.4 | 46.0 |
-| 3 | 0.84 | 58.8 | 42.0 |
-| 4 | 0.76 | 53.2 | 38.0 |
-| 5+ | 0.68 | 47.6 | 34.0 (max softening) |
+| 1 | 1.00 | 65.0 | 45.0 |
+| 2 | 0.92 | 59.8 | 41.4 |
+| 3 | 0.84 | 54.6 | 37.8 |
+| 4 | 0.76 | 49.4 | 34.2 |
+| 5+ | 0.68 | 44.2 | 30.6 (max softening) |
 
 The Weak Feature PS floor (30) is **not scaled** — a truly weak feature stays Weak Feature regardless of how many Y targets exist.
 
 ### Why Multiple Gates Instead of Just FinalScore?
 
 A single FinalScore threshold could be gamed by edge cases:
-- High FQ + high stability + low PS → FinalScore ≥ 60, but the feature doesn't predict anything
-- The PS gate ensures there must be a genuine predictive signal
-- The FQ gate ensures the feature's data is reliable enough to use
-- The VIF gate on HR ensures no multicollinear feature gets the top badge
+- High stability + low PS → FinalScore ≥ 50, but the feature doesn't predict anything useful
+- The PS gate ensures there must be a genuine predictive signal (≥ 45 for Recommended, ≥ 65 for HR)
+- The VIF gate on HR ensures no multicollinear feature gets the top badge (regardless of FinalScore)
+
+FQ quality gates were removed because data quality issues (missing values, near-zero variance) are now addressed in Preprocessing before feature selection runs — making FQ gates redundant.
 
 ---
 
@@ -669,8 +672,8 @@ Aggregate per feature (for all features in union + optional):
                          ← only over SELECTED targets, not all targets
   FQ[Xi]               = _compute_feature_quality() on full X (same as single-Y)
   Stability[Xi]        = _compute_stability_score() on full X, full Y (same as single-Y)
-  FinalScore[Xi]       = 0.25×adj_freq + 0.40×PS + 0.20×FQ + 0.15×Stability
-  Recommendation[Xi]   = _assign_recommendation(FinalScore, PS, FQ, VIF, corr, n_targets)
+  FinalScore[Xi]       = 0.30×adj_freq + 0.50×PS + 0.20×Stability
+  Recommendation[Xi]   = _assign_recommendation(FinalScore, PS, VIF, corr, n_targets)
 
 Run multicollinearity deduplication (ONCE on aggregated consensus)
 ```
@@ -875,47 +878,53 @@ The damping factor couples SelectionFreq to PS — a weak-PS feature cannot scor
 
 ### Scenario 7 — Recommendation Gate Example
 
-> Feature: FinalScore=78, PS=68, FQ=65, VIF=7.5
+> Feature: FinalScore=68, PS=70, VIF=7.5, n_targets=1
 
 ```
-Early Weak gates: PS=68 ≥ 30, FQ=65 ≥ 20 → pass
+Early Weak gates: PS=70 ≥ 30 → pass
 
 Highly Recommended check (n_targets=1, scale=1.0):
-  FinalScore ≥ 80?   78 < 80 → FAIL
+  FinalScore ≥ 70?   68 < 70 → FAIL
   → Not Highly Recommended
 
 Recommended check:
-  FinalScore ≥ 60?   78 ≥ 60 ✅
-  PS ≥ 50?           68 ≥ 50 ✅
-  FQ ≥ 40?           65 ≥ 40 ✅
+  FinalScore ≥ 50?   68 ≥ 50 ✅
+  PS ≥ 45?           70 ≥ 45 ✅
   → Recommended ✅
 ```
 
-This feature just missed Highly Recommended because FinalScore=78 < 80. All it takes is a slightly higher Stability or SelectionFreq to cross the HR threshold.
+This feature just missed Highly Recommended because FinalScore=68 < 70. A slightly higher Stability or SelectionFreq would push it across the HR threshold.
 
 ---
 
 ### Scenario 8 — Multi-Y Threshold Softening
 
-> Feature: FinalScore=78, PS=63, FQ=65, VIF=7.5, n_targets=3
+> Feature: FinalScore=55, PS=40, VIF=7.5, n_targets=3
 
 ```
 scale = 1.0 - 0.08 × (3-1) = 0.84
-effective HR PS threshold  = 70 × 0.84 = 58.8
-effective Rec PS threshold = 50 × 0.84 = 42.0
+effective HR PS threshold  = 65 × 0.84 = 54.6
+effective Rec PS threshold = 45 × 0.84 = 37.8
 
 Highly Recommended check:
-  FinalScore ≥ 80?   78 < 80 → FAIL
+  FinalScore ≥ 70?   55 < 70 → FAIL
   → Not Highly Recommended
 
-Recommended check:
-  FinalScore ≥ 60?   78 ≥ 60 ✅
-  PS ≥ 42.0?         63 ≥ 42 ✅
-  FQ ≥ 40?           65 ≥ 40 ✅
+Recommended check (multi-Y, scale=0.84):
+  FinalScore ≥ 50?   55 ≥ 50 ✅
+  PS ≥ 37.8?         40 ≥ 37.8 ✅
   → Recommended ✅
+
+Same feature with single-Y (scale=1.0):
+  Recommended check:
+  FinalScore ≥ 50?   55 ≥ 50 ✅
+  PS ≥ 45?           40 < 45 → FAIL
+  Consider check:
+  FinalScore ≥ 35?   55 ≥ 35 ✅
+  → Consider
 ```
 
-With single-Y the same feature would also be Recommended (PS=63 > 50). The softening only matters when PS is in the 40–70 range.
+The softening changed the outcome: **Consider → Recommended**. This reflects a feature that is a moderate contributor to one Y target out of three — a specialist signal that the scaled threshold correctly promotes.
 
 ---
 
