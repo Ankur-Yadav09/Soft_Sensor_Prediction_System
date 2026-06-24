@@ -301,6 +301,34 @@ def _render_basic_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -> No
         st.markdown("---")
         st.markdown("#### Remove Columns")
 
+        # --- Missing columns ---
+        _miss_pct = df[numeric_cols].isnull().mean() * 100  # % missing per column
+        cm1, cm2 = st.columns([1, 2])
+        with cm1:
+            remove_miss_cols = st.checkbox(
+                "Remove columns with **missing values**",
+                key="bp_rm_miss_cols",
+                help="Drops columns whose missing % exceeds the threshold below.",
+            )
+        with cm2:
+            miss_col_thr = st.number_input(
+                "Missing % threshold (drop if ≥ this %)",
+                min_value=0.0, max_value=100.0, value=50.0, step=1.0,
+                format="%.1f", key="bp_miss_col_thr",
+                help="0% = drop any column with even one missing value. 50% = only drop columns where more than half are missing.",
+                disabled=not st.session_state.get("bp_rm_miss_cols", False),
+            )
+        if remove_miss_cols:
+            _miss_drop_cols = [c for c in numeric_cols if _miss_pct[c] >= miss_col_thr]
+            if _miss_drop_cols:
+                st.caption(
+                    f"Will remove **{len(_miss_drop_cols)}** column(s) with ≥ {miss_col_thr:.0f}% missing: "
+                    f"`{', '.join(_miss_drop_cols)}`"
+                )
+            else:
+                st.caption(f"No columns with ≥ {miss_col_thr:.0f}% missing found.")
+
+        st.markdown("")
         _const_cols = [c for c in numeric_cols if df[c].std() == 0]
 
         c3, _ = st.columns(2)
@@ -454,6 +482,8 @@ def _render_basic_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -> No
         active_steps.append("Remove missing rows")
     if st.session_state.get("bp_rm_dupes"):
         active_steps.append("Remove duplicates")
+    if st.session_state.get("bp_rm_miss_cols"):
+        active_steps.append(f"Remove columns (missing ≥ {st.session_state.get('bp_miss_col_thr', 0.0):.0f}%)")
     if st.session_state.get("bp_rm_const_cols"):
         active_steps.append("Remove constant columns")
     if st.session_state.get("bp_rm_nzv_cols"):
@@ -492,6 +522,20 @@ def _render_basic_preprocessing(df: pd.DataFrame, numeric_cols: List[str]) -> No
             n_before = len(working)
             working = working.drop_duplicates().reset_index(drop=True)
             action_log.append(f"Removed **{n_before - len(working)}** duplicate row(s).")
+
+        if st.session_state.get("bp_rm_miss_cols"):
+            _miss_thr = float(st.session_state.get("bp_miss_col_thr", 0.0))
+            num_cols_now = working.select_dtypes(include=[np.number]).columns.tolist()
+            miss_drop = [
+                c for c in num_cols_now
+                if working[c].isnull().mean() * 100 >= _miss_thr
+            ]
+            if miss_drop:
+                working = working.drop(columns=miss_drop)
+                action_log.append(
+                    f"Removed **{len(miss_drop)}** column(s) with ≥ {_miss_thr:.0f}% missing values: "
+                    f"`{', '.join(miss_drop)}`."
+                )
 
         if st.session_state.get("bp_rm_const_cols"):
             num_cols_now = working.select_dtypes(include=[np.number]).columns.tolist()
