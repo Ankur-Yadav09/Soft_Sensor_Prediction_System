@@ -1,15 +1,783 @@
-# Feature Selection — How It Works (With Examples)
+# Feature Selection — Complete Technical Reference
 
-## Overview
+## Table of Contents
 
-The feature selection engine evaluates every X sensor/input against every Y KPI target
-**independently**, then aggregates the results using coverage and predictive strength.
-This prevents strong target-specific features from being averaged away when multiple
-Y targets are present.
+1. [Overview](#overview)
+2. [Input Preparation](#input-preparation)
+3. [Method 1 — Target Correlation](#method-1--target-correlation)
+4. [Method 2 — Mutual Information](#method-2--mutual-information)
+5. [Method 3 — mRMR](#method-3--mrmr)
+6. [Method 4 — Permutation Importance](#method-4--permutation-importance)
+7. [Method 5 — Elastic Net](#method-5--elastic-net)
+8. [Score Normalization](#score-normalization)
+9. [Predictive Strength (PS)](#predictive-strength-ps)
+10. [Feature Quality (FQ)](#feature-quality-fq)
+11. [Stability Score](#stability-score)
+12. [Selection Frequency + Damping](#selection-frequency--damping)
+13. [FinalScore Formula](#finalscore-formula)
+14. [Recommendation Assignment](#recommendation-assignment)
+15. [Multi-Y Aggregation Path](#multi-y-aggregation-path)
+16. [Multicollinearity Deduplication](#multicollinearity-deduplication)
+17. [Per-Feature Reasoning](#per-feature-reasoning)
+18. [Scenario Examples](#scenario-examples)
+19. [What Does NOT Change](#what-does-not-change)
 
 ---
 
-## Example Dataset
+## Overview
+
+The feature selection engine evaluates every X sensor against every Y KPI target **independently**, then aggregates the results. For multi-Y datasets this prevents strong target-specific features from being washed out by averaging across irrelevant targets.
+
+**Single-Y path:** `run_auto_feature_selection()` directly — 5 methods run once, consensus built once.
+
+**Multi-Y path:** `run_per_target_auto_selection()` — 5 methods run once per Y target, results aggregated using coverage as the primary signal.
+
+---
+
+## Input Preparation
+
+Before any method runs, the engine sanitizes the input data:
+
+### Step 1 — Fill missing values (`_safe_fill`)
+
+```
+For each column:
+  if any non-NaN values exist → fill NaN with column mean
+  if all values are NaN      → fill with 0
+```
+
+This is a temporary fill used only inside the feature selection engine — it does NOT modify `st.session_state.df`. The user's preprocessing choices (imputation, outlier treatment) are applied before this step via the Preprocessing page.
+
+### Step 2 — Drop constant columns (`_drop_constant_cols`)
+
+```
+Drop any column where std == 0
+```
+
+A column with zero standard deviation carries no signal — all values are identical. These are dropped before every method runs. The list of dropped columns is recorded in `dataset_info["constant_features"]` and displayed as a warning banner in the Feature Selection UI.
+
+### Step 3 — VIF computation (`_compute_vif`)
+
+Variance Inflation Factor measures how much a feature's variance is explained by the other features — a proxy for multicollinearity.
+
+For each feature Xi:
+```
+Regress Xi on all other Xj (j ≠ i) using OLS or Ridge
+R² = coefficient of determination of that regression
+VIF = 1 / (1 - R²)
+```
+
+Ridge regression is used when `n_features ≥ 0.5 × n_rows` (near-collinear system). VIF is capped at 9999. Skipped entirely if `n_features > 80` (performance).
+
+| VIF Range | Level |
+|---|---|
+| ≤ 5 | Low — no multicollinearity concern |
+| 5 – 10 | Moderate — watch this feature |
+| > 10 | High — significant multicollinearity |
+
+### Step 4 — X–X and X–Y Correlation Matrices
+
+**X–X:** `X_clean.corr(method="pearson")` — used for multicollinearity detection (Overview tab) and deduplication pass.
+
+**X–Y (corr_with_target):** For each X feature and each Y target: signed Pearson r. Stored per column; used in reasoning generation and as a signal gate in `_assign_recommendation()`.
+
+---
+
+## Method 1 — Target Correlation
+
+**Category:** Supervised | **PS Weight:** 20%
+
+**What it measures:** Linear relationship between each X feature and each Y target, measured by Pearson r.
+
+### Exact Algorithm
+
+```
+For each feature Xi (i = 1 … n_features):
+  For each target Yj (j = 1 … n_targets):
+    r_ij = Pearson correlation coefficient between Xi and Yj
+         = corrcoef(Xi, Yj)[0, 1]
+    if NaN → replace with 0.0
+
+  raw_score[Xi] = mean( |r_i1|, |r_i2|, …, |r_in| )
+  sign[Xi] = "positive" if majority of r_ij ≥ 0 else "negative"
+  per_target[Xi][Yj] = |r_ij|   ← stored for Tab5 display
+```
+
+The scoring uses **absolute** value (`|r|`) because both strong positive and strong negative correlation indicate predictive power. The sign is stored separately for display.
+
+### Example
+
+| Feature | r with Y1 | r with Y2 | Avg |r| | Raw Score |
+|---|---|---|---|---|
+| Temperature | +0.92 | -0.20 | 0.56 | 0.56 |
+| Pressure | +0.30 | +0.88 | 0.59 | 0.59 |
+| Humidity | +0.05 | +0.05 | 0.05 | 0.05 |
+
+After min-max normalization (see §8): scores become 0–1 relative to the best feature in this run.
+
+### Notes
+
+- Measures only **linear** relationship. A feature with a strong non-linear relationship (e.g., U-shaped) may score low here but high on Mutual Information.
+- In Tab5 (method detail expander), the signed r values are shown per Y column. The "Avg |r|" column is what feeds into scoring.
+
+---
+
+## Method 2 — Mutual Information
+
+**Category:** Supervised | **PS Weight:** 25%
+
+**What it measures:** Non-linear statistical dependency between X and Y. MI = 0 means independence; higher means more dependency of any kind (linear or non-linear).
+
+### Exact Algorithm
+
+```
+For each target Yj (j = 1 … n_targets):
+  mi_j = mutual_info_regression(X, Yj, random_state=42)
+       = array of MI scores, one per feature
+       (uses sklearn's k-nearest neighbour estimator)
+
+For each feature Xi:
+  raw_score[Xi] = mean( mi_1[i], mi_2[i], …, mi_n[i] )
+  per_target[Xi][Yj] = mi_j[i]   ← stored for Tab5
+```
+
+`mutual_info_regression` estimates MI using the Kozachenko–Leonenko entropy estimator with k=3 nearest neighbours by default. It handles continuous variables and does not assume any particular distribution.
+
+### When MI > Correlation
+
+A feature that is strongly correlated with Y in a non-linear way (exponential, quadratic, periodic) will show:
+- Low Target Correlation score (r ≈ 0 for perfectly symmetric non-linear relationships)
+- High MI score (still detects the dependency)
+
+This is why MI has the second-highest weight (25%) and runs alongside Correlation.
+
+---
+
+## Method 3 — mRMR
+
+**Category:** Advanced Filter | **PS Weight:** 15%
+
+**What it measures:** Maximum Relevance Minimum Redundancy — selects features that are maximally relevant to the target while being minimally redundant with already-selected features.
+
+### Exact Algorithm
+
+```
+Step 1 — Compute relevance
+  For each target Yj: run mutual_info_regression(X, Yj)
+  relevance[Xi] = mean MI across all targets
+
+Step 2 — Build X–X Pearson correlation matrix
+  corr_matrix[i, j] = Pearson r between Xi and Xj
+
+Step 3 — Greedy selection loop (selects top_k features)
+  selected = []
+  remaining = [all features]
+
+  Iteration 1: pick feature with highest relevance
+    → adds to selected, removes from remaining
+
+  Iteration 2 … top_k:
+    For each candidate Xi in remaining:
+      redundancy[Xi] = mean( |corr_matrix[Xi, Xs]| for Xs in selected )
+      score[Xi] = relevance[Xi] - redundancy[Xi]
+    → pick Xi with highest score
+    → adds to selected, removes from remaining
+
+Step 4 — Assign rank-based scores
+  raw_score[Xi] = top_k - rank    if Xi in selected  (1st → top_k, 2nd → top_k-1 …)
+  raw_score[Xi] = 0               if Xi not selected
+```
+
+### Why mRMR Matters
+
+Two features can both have high MI with Y, but if they are highly correlated with each other (r=0.95), including both adds little new information. mRMR penalizes the second one for redundancy, naturally preferring a diverse, non-redundant feature set.
+
+### Example (top_k = 5)
+
+| Selection Round | Feature | Relevance | Redundancy | Score |
+|---|---|---|---|---|
+| 1 | Temperature | 0.88 | — | 0.88 |
+| 2 | Pressure | 0.85 | 0.22 | 0.63 |
+| 3 | Flow_Rate | 0.72 | 0.18 | 0.54 |
+| 4 | pH | 0.75 | 0.31 | 0.44 |
+| 5 | Vibration | 0.60 | 0.19 | 0.41 |
+
+Raw scores: Temperature=5, Pressure=4, Flow_Rate=3, pH=2, Vibration=1, Humidity=0
+
+---
+
+## Method 4 — Permutation Importance
+
+**Category:** Feature Importance | **PS Weight:** 30% (highest weight)
+
+**What it measures:** The drop in model R² when a feature's values are randomly shuffled. A large drop means the model relies on that feature; a small drop means the feature is not critical.
+
+### Exact Algorithm
+
+```
+Step 1 — Subsample data (if large)
+  Max rows = 5000 (to keep runtime manageable)
+  Sample randomly without replacement, seed=42
+
+Step 2 — Average Y targets
+  y_avg = mean(Y1, Y2, …, Yn) per row
+  (multi-Y: uses averaged target for the base model)
+
+Step 3 — Train base Random Forest
+  RandomForestRegressor(
+    n_estimators = 50,
+    max_features = 0.5,
+    random_state = 42,
+    n_jobs       = -1
+  )
+  rf.fit(X_sampled, y_avg)
+
+Step 4 — Compute permutation importance
+  sklearn.permutation_importance(
+    rf, X_sampled, y_avg,
+    n_repeats   = 5,
+    random_state= 42
+  )
+  importance[Xi] = mean drop in R² across 5 shuffles of column i
+  Clip negatives to 0 (negative means shuffling helped — treat as zero signal)
+
+Step 5 — Raw score
+  raw_score[Xi] = importance[Xi]   (mean R² drop, 5 repeats)
+```
+
+### Why Permutation Has the Highest Weight (30%)
+
+- It is **model-agnostic in principle** (uses a trained model but the scoring is post-hoc)
+- It captures **actual predictive drop** — not just correlation or coefficient magnitude
+- It is robust against feature scale differences (permutation doesn't care about units)
+- A feature that scores high here genuinely hurts prediction when removed
+
+### Limitation
+
+Permutation importance can underestimate correlated features — if Xi and Xj are highly correlated, shuffling Xi may not hurt much because Xj compensates. The multicollinearity deduplication pass (Phase 6) addresses this downstream.
+
+---
+
+## Method 5 — Elastic Net
+
+**Category:** Intrinsic | **PS Weight:** 10%
+
+**What it measures:** Sparse linear regression coefficient after L1+L2 regularization. Features with non-zero coefficients are selected; coefficient magnitude indicates relative importance.
+
+### Exact Algorithm
+
+```
+Step 1 — Standardize X
+  scaler = StandardScaler()
+  X_scaled = scaler.fit_transform(X)
+  (Required: coefficients must be on the same scale for L1 to be fair)
+
+Step 2 — Cross-validation folds
+  cv = min(3, max(2, n_rows / 50))
+  (adaptive: tiny datasets get cv=2, larger get cv=3)
+
+Step 3 — Fit model
+  Single Y:  ElasticNetCV(cv=cv, random_state=42, max_iter=2000)
+  Multi-Y:   MultiTaskElasticNetCV(cv=cv, random_state=42, max_iter=2000)
+  → CV selects the best alpha (regularization strength) automatically
+
+Step 4 — Extract coefficients
+  Single Y:  coefs = |model.coef_|                   shape: (n_features,)
+  Multi-Y:   coefs = mean(|model.coef_|, axis=0)     shape: (n_features,)
+             per_target[Xi][Yj] = |coef_matrix[j, i]|
+
+Step 5 — Binary selection flag
+  ElasticNetSelected[Xi] = True  if coefs[i] > 1e-8
+                         = False otherwise
+  (L1 regularization drives truly irrelevant features exactly to 0)
+
+Step 6 — Raw score
+  raw_score[Xi] = coefs[i]
+```
+
+### What L1 + L2 Does
+
+- **L1 (Lasso):** drives irrelevant feature coefficients to exactly 0 → automatic selection
+- **L2 (Ridge):** keeps correlated features stable → prevents one from dominating arbitrarily
+- Elastic Net balances both, making it more stable than pure Lasso when features are correlated
+
+### Why Elastic Net Has the Lowest Weight (10%)
+
+Elastic Net is a linear model — it cannot detect non-linear relationships. It is included for stability and as a regularization cross-check, but its signal is intentionally weighted lower than model-based methods (Permutation, MI).
+
+---
+
+## Score Normalization
+
+After each method computes its raw scores, they are normalized to [0, 1] using min-max scaling.
+
+```
+normalized[Xi] = (raw[Xi] - min_raw) / (max_raw - min_raw)
+
+Edge case: if all features have the same raw score → every feature gets 0.5
+```
+
+This normalization is applied PER METHOD. A score of 0.8 from Mutual Information and 0.8 from Target Correlation both mean "80% of the way between the worst and best feature in THIS run" — not the same absolute value.
+
+**Why normalize?** The raw scales are incompatible. Target Correlation produces values in [0, 1]; Mutual Information is in nats (unbounded); Permutation Importance is in R² units; Elastic Net is in coefficient magnitude. Normalization puts all methods on a common 0–1 scale before combining them into PS.
+
+---
+
+## Predictive Strength (PS)
+
+PS is the weighted combination of the 5 normalized method scores. It represents "how strongly does this feature predict the target(s) according to our ensemble of methods?"
+
+### Formula
+
+```
+PS = (w_corr × norm_corr + w_mi × norm_mi + w_perm × norm_perm
+      + w_mrmr × norm_mrmr + w_en × norm_en) × 100
+```
+
+### Exact Weights
+
+| Method | Weight | Reason |
+|---|---|---|
+| Permutation Importance | **30%** | Directly measures predictive drop — most informative signal |
+| Mutual Information | **25%** | Captures non-linear dependencies missed by correlation |
+| Target Correlation | **20%** | Fast, interpretable linear signal |
+| mRMR | **15%** | Relevance-minus-redundancy — penalizes redundant features |
+| Elastic Net | **10%** | Regularized linear model — lower weight (linear only) |
+
+### Weight Redistribution on Method Failure
+
+If a method fails (exception, insufficient data) its weight is redistributed proportionally to the remaining active methods:
+
+```
+For each active method m:
+  norm_weight[m] = weight[m] / sum(weights of active methods)
+
+PS = sum( norm_weight[m] × score[m] ) × 100
+```
+
+Example: if Elastic Net fails, the 10% is split proportionally — Permutation gets ~33.3%, MI gets ~27.8%, etc. PS stays on the 0–100 scale.
+
+### PS Result: 0–100
+
+- PS = 100: feature scored top-ranked in every method
+- PS = 50: mid-range across methods
+- PS = 0: bottom-ranked in every method
+
+---
+
+## Feature Quality (FQ)
+
+FQ measures the **data health** of a feature — independent of its predictive strength. A feature can have high PS but poor FQ (e.g., highly multicollinear or mostly missing).
+
+### Formula
+
+```
+FQ = 0.50 × VIF_Score + 0.30 × Missing_Score + 0.20 × Variance_Score
+```
+
+### VIF Score (50% of FQ)
+
+| VIF | VIF_Score |
+|---|---|
+| ≤ 5 | 100 — no multicollinearity |
+| 5 – 10 | 80 — moderate, acceptable |
+| 10 – 20 | 50 — high, consider removing |
+| 20 – 30 | 20 — very high |
+| > 30 | 0 — extreme multicollinearity |
+| NaN (skipped) | 70 — neutral assumption |
+
+### Missing Value Score (30% of FQ)
+
+| Missing % | Miss_Score |
+|---|---|
+| ≤ 1% | 100 — essentially complete |
+| 1 – 5% | 90 |
+| 5 – 10% | 75 |
+| 10 – 20% | 50 |
+| 20 – 30% | 25 |
+| > 30% | 0 — too much missing data |
+
+### Variance Score (20% of FQ)
+
+| std | Var_Score |
+|---|---|
+| = 0 | 0 — constant, no information |
+| < 0.001 | 20 — near-zero variance |
+| 0.001 – 0.01 | 50 |
+| 0.01 – 0.05 | 80 |
+| ≥ 0.05 | 100 — healthy variance |
+
+### FQ Example
+
+Feature: `Pressure` — VIF=8.5, Missing=3%, std=0.12
+
+```
+VIF_Score     = 80   (VIF between 5 and 10)
+Missing_Score = 90   (3% missing)
+Variance_Score= 100  (std ≥ 0.05)
+
+FQ = 0.50 × 80 + 0.30 × 90 + 0.20 × 100
+   = 40 + 27 + 20
+   = 87.0
+```
+
+---
+
+## Stability Score
+
+Stability measures how **consistently** a feature is selected across random subsets of the data. A high-stability feature is reliably important regardless of which rows are in the training set.
+
+### Parameters (from `settings.py`)
+
+| Parameter | Value | Meaning |
+|---|---|---|
+| `FS_STABILITY_RUNS` | 20 | Number of bootstrap iterations |
+| `FS_STABILITY_SAMPLE_FRAC` | 0.80 | 80% of rows sampled per run |
+| `FS_STABILITY_MAX_ROWS` | 3000 | Cap on rows used for stability (performance) |
+
+### Exact Algorithm
+
+```
+sample_size = int( min(n_rows, 3000) × 0.80 )
+sample_size = max(sample_size, 20)
+
+stability_points = {feature: 0.0 for all features}
+
+For run = 1 … 20:
+
+  Step 1 — Bootstrap sample
+    idx = random sample WITH replacement, size = sample_size, seed varies per run
+    X_boot = X[idx], y_boot = y[idx]
+
+  Step 2 — Run 3 fast methods on bootstrap sample
+    Method A: Target Correlation   → selected_A (top-k features)
+    Method B: Mutual Information   → selected_B
+    Method C: RF Importance        → selected_C
+    (RF Importance is NOT a scoring method — used only here for stability)
+
+  Step 3 — Require ≥ 2 votes (60% of 3 methods) to count a feature
+    required_votes = ceil(3 × 0.60) = 2
+
+  Step 4 — Compute rank-weighted score for this run
+    For each method's ranked list:
+      For each feature Xi at rank r (0-indexed):
+        rank_weight = (top_k - r) / top_k
+        add rank_weight to feature_points[Xi]
+        increment votes[Xi]
+
+  Step 5 — Credit features that met the vote threshold
+    For each feature Xi:
+      if votes[Xi] ≥ 2:
+        normalized_score = feature_points[Xi] / 3  (divide by n_methods)
+        stability_points[Xi] += normalized_score
+
+Final StabilityScore:
+  For each feature Xi:
+    StabilityScore[Xi] = (stability_points[Xi] / 20) × 100
+    Clipped to [0, 100]
+```
+
+### What Rank Weighting Does
+
+A feature ranked 1st in a method contributes more than a feature ranked 10th, even if both are "selected":
+
+```
+top_k = 10, feature at rank 0 (1st): weight = (10-0)/10 = 1.0
+top_k = 10, feature at rank 9 (10th): weight = (10-9)/10 = 0.1
+```
+
+This rewards consistent top ranking, not just borderline inclusion.
+
+### Stability Fallback
+
+If the bootstrap process fails (exception in all 3 methods), every feature gets `StabilityScore = 50.0` (neutral — no information either way).
+
+---
+
+## Selection Frequency + Damping
+
+### Selection Frequency
+
+```
+SelectionCount[Xi] = number of the 5 core methods that included Xi in their top-k
+SelectionFreq[Xi]  = SelectionCount / 5 × 100   (expressed as 0–100%)
+```
+
+A feature selected by all 5 methods: SelectionFreq = 100%
+A feature selected by 3 of 5 methods: SelectionFreq = 60%
+
+### Damping Factor
+
+A weak feature can appear in many methods' top-k lists simply because it ranked, say, 8th out of 10 features in a dataset with few alternatives. To prevent high SelectionFreq from inflating FinalScore for a weak feature:
+
+```
+adjusted_SelectionFreq = SelectionFreq × max(PS, 25.0) / 100
+```
+
+| PS | Damping effect on SelectionFreq |
+|---|---|
+| PS = 80 | adjusted = SelectionFreq × 0.80 (mild dampening) |
+| PS = 50 | adjusted = SelectionFreq × 0.50 (moderate) |
+| PS = 25 | adjusted = SelectionFreq × 0.25 (strong dampening, minimum floor) |
+| PS = 10 | adjusted = SelectionFreq × 0.25 (same as PS=25 — floor at 25%) |
+
+The floor of 25 prevents a feature from being scored as if it has zero frequency even when PS is very low.
+
+---
+
+## FinalScore Formula
+
+```
+FinalScore = 0.30 × adjusted_SelectionFreq
+           + 0.50 × PredictiveStrength
+           + 0.20 × StabilityScore
+```
+
+**Feature Quality (FQ) is not part of FinalScore.** Missing values and near-zero variance are handled upstream in the Preprocessing step, so those sub-components would be flat constants for every feature. VIF still enforces quality as a hard gate inside `_assign_recommendation()` — a high-VIF feature cannot reach Highly Recommended regardless of its FinalScore.
+
+### Component Weights
+
+| Component | Weight | Range | Drives |
+|---|---|---|---|
+| adjusted_SelectionFreq | **30%** | 0–100 | Breadth — how many methods agree |
+| PredictiveStrength | **50%** | 0–100 | Core signal — weighted method ensemble |
+| StabilityScore | **20%** | 0–100 | Robustness — consistency across bootstrap runs |
+
+PredictiveStrength carries the highest weight (50%) because it directly encodes the multi-method predictive ensemble. Stability rewards features that are consistently selected across data subsets, not just on the full dataset.
+
+### FinalScore Range
+
+| FinalScore | Typical outcome |
+|---|---|
+| ≥ 80 | Highly Recommended (if other gates pass) |
+| 60 – 79 | Recommended (if PS and FQ thresholds pass) |
+| 40 – 59 | Consider |
+| < 40 | Weak Feature |
+
+---
+
+## Recommendation Assignment
+
+Recommendation is assigned by `_assign_recommendation()` using a **multi-gate** logic — not just FinalScore. Every gate must pass for the higher tiers.
+
+### Exact Thresholds (from `settings.py`)
+
+| Threshold constant | Value |
+|---|---|
+| `FS_HIGHLY_REC_MIN_FINAL` | 80.0 |
+| `FS_HIGHLY_REC_MIN_PRED_STRENGTH` | 70.0 |
+| `FS_HIGHLY_REC_MIN_QUALITY` | 60.0 |
+| `FS_HIGHLY_REC_MAX_VIF` | 10.0 |
+| `FS_RECOMMENDED_MIN_FINAL` | 60.0 |
+| `FS_RECOMMENDED_MIN_PRED_STRENGTH` | 50.0 |
+| `FS_RECOMMENDED_MIN_QUALITY` | 40.0 |
+| `FS_CONSIDER_MIN_FINAL` | 40.0 |
+| `FS_WEAK_MAX_PRED_STRENGTH` | 30.0 |
+| `FS_WEAK_MAX_QUALITY` | 20.0 |
+
+### Decision Logic (evaluated in order)
+
+```
+1. EARLY WEAK FEATURE GATES (override everything):
+   if |avg_corr_with_target| < 0.05 AND PS < 50:
+       → "Weak Feature"   (no linear signal and low predictive power)
+   if PS < 30 OR FQ < 20:
+       → "Weak Feature"   (minimum quality/strength floor)
+
+2. HIGHLY RECOMMENDED (all 4 conditions must hold):
+   FinalScore  ≥ 80
+   PS          ≥ 70 × scale   (scale reduces for multi-Y, see below)
+   FQ          ≥ 60
+   VIF         < 10
+   → "Highly Recommended"
+
+3. RECOMMENDED (all 3 conditions must hold):
+   FinalScore  ≥ 60
+   PS          ≥ 50 × scale
+   FQ          ≥ 40
+   → "Recommended"
+
+4. CONSIDER:
+   FinalScore  ≥ 40
+   → "Consider"
+
+5. DEFAULT:
+   → "Weak Feature"
+```
+
+### Multi-Y PS Scaling
+
+When there are multiple Y targets, the PS thresholds for HR and Recommended are softened. This compensates for the fact that PS is averaged across targets, which naturally compresses scores when a feature is a specialist for one target out of many.
+
+```
+scale = 1.0 - 0.08 × min(n_targets - 1, 4)
+```
+
+| n_targets | scale | Effective HR PS threshold | Effective Rec PS threshold |
+|---|---|---|---|
+| 1 | 1.00 | 70.0 | 50.0 |
+| 2 | 0.92 | 64.4 | 46.0 |
+| 3 | 0.84 | 58.8 | 42.0 |
+| 4 | 0.76 | 53.2 | 38.0 |
+| 5+ | 0.68 | 47.6 | 34.0 (max softening) |
+
+The Weak Feature PS floor (30) is **not scaled** — a truly weak feature stays Weak Feature regardless of how many Y targets exist.
+
+### Why Multiple Gates Instead of Just FinalScore?
+
+A single FinalScore threshold could be gamed by edge cases:
+- High FQ + high stability + low PS → FinalScore ≥ 60, but the feature doesn't predict anything
+- The PS gate ensures there must be a genuine predictive signal
+- The FQ gate ensures the feature's data is reliable enough to use
+- The VIF gate on HR ensures no multicollinear feature gets the top badge
+
+---
+
+## Multi-Y Aggregation Path
+
+For datasets with more than one Y target, `run_per_target_auto_selection()` is the primary engine. It runs the full 5-method pipeline once per Y target independently, then aggregates.
+
+### Step-by-Step Flow
+
+```
+For each Y target (Y1, Y2, … Yn):
+  Run run_auto_feature_selection(X, [Yj], _apply_dedup=False)
+  → produces AutoSelectionResult_j with:
+    - consensus_df_j    (PS, FQ, Stability, Recommendation for this target alone)
+    - recommended_j     (HR + Recommended features for Yj)
+    - optional_j        (Consider features for Yj)
+    - method_results_j  (5 MethodResult objects)
+    - corr_with_target_j (X vs Yj correlations)
+    - vif_df_j          (X–X VIF, same across all targets)
+    - correlation_matrix_j (X–X Pearson, same across all targets)
+
+Build union_features:
+  All features that were Recommended or HR in at least one target's result
+  Sorted by coverage count descending
+
+Build optional_union:
+  All features that were Consider in at least one target (not already in union)
+
+Build feature_target_map:
+  feature_target_map[Xi] = [list of Yj where Xi was recommended/HR]
+
+Aggregate per feature (for all features in union + optional):
+  CoverageCount[Xi]    = len(feature_target_map[Xi])
+  CoverageRatio[Xi]    = CoverageCount[Xi] / n_targets
+  SelectionFreq[Xi]    = CoverageRatio × 100   ← replaces method-count frequency
+  PS[Xi]               = mean( PS_j[Xi] for Yj in feature_target_map[Xi] )
+                         ← only over SELECTED targets, not all targets
+  FQ[Xi]               = _compute_feature_quality() on full X (same as single-Y)
+  Stability[Xi]        = _compute_stability_score() on full X, full Y (same as single-Y)
+  FinalScore[Xi]       = 0.25×adj_freq + 0.40×PS + 0.20×FQ + 0.15×Stability
+  Recommendation[Xi]   = _assign_recommendation(FinalScore, PS, FQ, VIF, corr, n_targets)
+
+Run multicollinearity deduplication (ONCE on aggregated consensus)
+```
+
+### Why PS Uses Only Selected Targets
+
+If Temperature predicts Y1 well (PS=91) but not Y2 or Y3 (PS=17, 20), the old approach of averaging all three gives PS=42.7, which would classify Temperature as borderline or weak. By averaging only over the targets that recommended Temperature (just Y1), PS = 91 — reflecting its true strength for the target it matters for.
+
+### The Aggregated PerTargetSelectionResult
+
+All downstream UI tabs read from this aggregated result as if it were an `AutoSelectionResult` — Tab2, Tab3, Tab4, Tab5 are unchanged. Tab6 additionally shows the per-target breakdown table.
+
+---
+
+## Multicollinearity Deduplication
+
+After all scores are assigned, a post-scoring pass removes redundant feature pairs from the Recommended list.
+
+### When It Runs
+
+| Scenario | Where |
+|---|---|
+| Single-Y | At end of `run_auto_feature_selection()` |
+| Multi-Y | At end of `run_per_target_auto_selection()` on aggregated consensus |
+| Per-target sub-calls | **Disabled** (`_apply_dedup=False`) — prevents corrupting union calculation |
+
+### Algorithm
+
+```
+Input: consensus_df, X–X correlation_matrix, corr_threshold (UI setting, default 0.85)
+
+1. Find all Recommended/Highly Recommended features
+2. Scan correlation_matrix for pairs where |r| > corr_threshold
+3. Sort pairs by |r| descending (most redundant first)
+4. Greedy resolution:
+   For each pair (A, B) in sorted order:
+     if either is already downgraded → skip
+     if both still Recommended/HR:
+       winner = feature with higher FinalScore
+       loser  = the other
+       loser.Recommendation = "Consider"
+       loser.MulticollinearWith = "winner_name (|r|=X.XXXX)"
+```
+
+Downgraded features remain in the dataset as "Consider" — the user can manually include them if domain knowledge supports it. They are excluded from the Quick-Apply "Use Recommended" set.
+
+---
+
+## Per-Feature Reasoning
+
+After all scores and recommendations are computed, `_generate_reasoning()` builds a human-readable explanation for each feature that appears in the Feature Selection UI (Tab2 "Why?" column).
+
+### Content of the Reasoning Block
+
+```
+1. Score card table
+   Feature name, Recommendation label
+   FinalScore, PS, FQ, Stability, SelectionFreq
+
+2. Reason tags (bullet points)
+   SelectionFreq interpretation:
+     ≥75% → "Selected by X/5 methods (high consensus)"
+     ≥50% → "moderate consensus"
+     <50%  → "low consensus"
+   Average rank interpretation (informational):
+     ≤3  → "consistently top ranked"
+     ≤7  → "moderately ranked"
+     >7   → "lower ranked"
+   PS interpretation:
+     ≥70 → "High predictive power"
+     ≥50 → "Moderate predictive power"
+     <50 → "Low predictive power"
+   Permutation importance:
+     norm>0.6 → "Strong permutation importance"
+     norm>0.3 → "Moderate permutation importance"
+   mRMR: if norm>0.6 → "Low redundancy detected by mRMR"
+   VIF:
+     >10 → "High multicollinearity (VIF=X)"
+     >5  → "Moderate multicollinearity"
+     ≤5  → "Low multicollinearity"
+   Correlation with target:
+     |r|<0.1 → "Low correlation with target"
+     |r|≥0.5 → "Strong correlation (|r|=X)"
+   FQ: ≥80 → "Excellent feature quality" / <40 → "Poor quality"
+   Stability: ≥75 → "Stable" / <40 → "Unstable"
+
+3. Correlation with each target (signed r per Y column)
+
+4. Elastic Net: selected or eliminated
+
+5. Which of the 5 methods selected / rejected this feature
+
+6. Business interpretation paragraph
+   Highly Recommended: include as primary input
+   Recommended: supporting input
+   Consider: include only if domain knowledge supports
+   Weak Feature: not recommended
+```
+
+If multicollinearity deduplication downgraded a feature, an additional note is appended:
+> "Downgraded from Recommended: highly correlated with {winner} (|r|=X.XXXX) — include only one of this pair."
+
+---
+
+## Scenario Examples
+
+### Example Dataset
 
 | Sensors (X) | KPI Targets (Y) |
 |---|---|
@@ -20,234 +788,7 @@ Y targets are present.
 | Vibration | |
 | Humidity | |
 
-**6 input sensors → 3 KPI targets**
-
 ---
-
-## Phase 1 — Per-Target Independent Scoring
-
-For each Y target, all 5 scoring methods run independently on the full X dataset.
-No target information is mixed or averaged at this stage.
-
-### 5 Scoring Methods
-
-| Method | What It Measures |
-|---|---|
-| **Target Correlation** | Linear relationship between X and Y |
-| **Mutual Information** | Non-linear dependency between X and Y |
-| **mRMR** | Relevance to Y minus redundancy with already-selected features |
-| **Permutation Importance** | Drop in prediction accuracy when X is shuffled |
-| **Elastic Net** | Regularised regression coefficient — sparse and stable |
-
-Each method produces a score per feature (0–1 normalised). These combine into
-**Predictive Strength (PS)** using fixed weights:
-
-| Method | Weight |
-|---|---|
-| Permutation Importance | 30% |
-| Mutual Information | 25% |
-| Target Correlation | 20% |
-| mRMR | 15% |
-| Elastic Net | 10% |
-
----
-
-### Y1 = Product_Quality
-
-| Feature | Correlation | Mut. Info | mRMR | Permutation | ElasticNet | **PS** | **Verdict** |
-|---|---|---|---|---|---|---|---|
-| Temperature | 0.92 | 0.88 | 0.85 | 0.91 | ✅ | **91** | ✅ Highly Recommended |
-| pH | 0.85 | 0.80 | 0.78 | 0.83 | ✅ | **82** | ✅ Recommended |
-| Flow_Rate | 0.70 | 0.65 | 0.60 | 0.72 | ❌ | **67** | ✅ Recommended |
-| Pressure | 0.30 | 0.28 | 0.25 | 0.31 | ❌ | **29** | ❌ Weak Feature |
-| Vibration | 0.10 | 0.12 | 0.08 | 0.09 | ❌ | **10** | ❌ Weak Feature |
-| Humidity | 0.05 | 0.04 | 0.06 | 0.05 | ❌ | **5** | ❌ Weak Feature |
-
-### Y2 = Energy_Consumption
-
-| Feature | Correlation | Mut. Info | mRMR | Permutation | ElasticNet | **PS** | **Verdict** |
-|---|---|---|---|---|---|---|---|
-| Pressure | 0.88 | 0.90 | 0.87 | 0.89 | ✅ | **88** | ✅ Highly Recommended |
-| Flow_Rate | 0.82 | 0.79 | 0.80 | 0.84 | ✅ | **81** | ✅ Recommended |
-| Vibration | 0.75 | 0.72 | 0.70 | 0.73 | ❌ | **73** | ✅ Recommended |
-| Temperature | 0.20 | 0.18 | 0.22 | 0.19 | ❌ | **20** | ❌ Weak Feature |
-| pH | 0.10 | 0.09 | 0.11 | 0.08 | ❌ | **10** | ❌ Weak Feature |
-| Humidity | 0.05 | 0.06 | 0.04 | 0.05 | ❌ | **5** | ❌ Weak Feature |
-
-### Y3 = Yield_Rate
-
-| Feature | Correlation | Mut. Info | mRMR | Permutation | ElasticNet | **PS** | **Verdict** |
-|---|---|---|---|---|---|---|---|
-| Flow_Rate | 0.78 | 0.74 | 0.72 | 0.76 | ✅ | **74** | ✅ Highly Recommended |
-| pH | 0.72 | 0.70 | 0.68 | 0.74 | ✅ | **71** | ✅ Recommended |
-| Vibration | 0.55 | 0.52 | 0.50 | 0.54 | ❌ | **53** | ✅ Recommended |
-| Temperature | 0.18 | 0.15 | 0.20 | 0.17 | ❌ | **17** | ❌ Weak Feature |
-| Pressure | 0.22 | 0.20 | 0.18 | 0.21 | ❌ | **20** | ❌ Weak Feature |
-| Humidity | 0.04 | 0.05 | 0.03 | 0.04 | ❌ | **4** | ❌ Weak Feature |
-
----
-
-## Phase 2 — Union of Selected Features
-
-All features recommended (HR or Rec) by **at least one target** enter the union.
-Features rejected by every target are excluded.
-
-| Feature | Y1 Verdict | Y2 Verdict | Y3 Verdict | **In Union?** |
-|---|---|---|---|---|
-| Temperature | ✅ HR | ❌ Weak | ❌ Weak | ✅ Yes |
-| pH | ✅ Rec | ❌ Weak | ✅ Rec | ✅ Yes |
-| Flow_Rate | ✅ Rec | ✅ Rec | ✅ HR | ✅ Yes |
-| Pressure | ❌ Weak | ✅ HR | ❌ Weak | ✅ Yes |
-| Vibration | ❌ Weak | ✅ Rec | ✅ Rec | ✅ Yes |
-| Humidity | ❌ Weak | ❌ Weak | ❌ Weak | ❌ No |
-
-> **Humidity** is excluded — no target found it useful.
-> **Pressure** and **Temperature** are included even though they were rejected by 2/3 targets —
-> their specialist signal for one target is preserved.
-
----
-
-## Phase 3 — feature_target_map (Auto-Built)
-
-The system automatically records which targets selected each feature:
-
-| Feature | Selected By | Coverage Count | Coverage % |
-|---|---|---|---|
-| Temperature | Product_Quality | 1 / 3 | 33% |
-| pH | Product_Quality, Yield_Rate | 2 / 3 | 67% |
-| Flow_Rate | Product_Quality, Energy, Yield_Rate | 3 / 3 | 100% |
-| Pressure | Energy_Consumption | 1 / 3 | 33% |
-| Vibration | Energy_Consumption, Yield_Rate | 2 / 3 | 67% |
-
-This map is built automatically by scanning each target's `recommended_features` list
-in a single loop — no manual input required.
-
----
-
-## Phase 4 — Predictive Strength Aggregation (Key Fix)
-
-PS is averaged **only over the targets that selected the feature**, not all targets.
-
-### Why This Matters
-
-| Feature | PS(Y1) | PS(Y2) | PS(Y3) | Mean ALL (wrong) | Selected Targets | **Mean SELECTED (correct)** |
-|---|---|---|---|---|---|---|
-| Temperature | **91** | 20 | 17 | 42.7 ❌ | Y1 only | **91.0** ✅ |
-| pH | **82** | 10 | **71** | 54.3 ❌ | Y1, Y3 | **76.5** ✅ |
-| Flow_Rate | **67** | **81** | **74** | 74.0 ✅ | Y1, Y2, Y3 | **74.0** ✅ |
-| Pressure | 29 | **88** | 20 | 45.7 ❌ | Y2 only | **88.0** ✅ |
-| Vibration | 10 | **73** | **53** | 45.3 ❌ | Y2, Y3 | **63.0** ✅ |
-
-> Only **Flow_Rate** (selected by all targets) gives the same result either way.
-> Every specialist feature is diluted by the "mean all" approach.
-
----
-
-## Phase 5 — Final Score Computation (unchanged)
-
-Four components combine into the Final Score:
-
-```
-FinalScore = 0.25 × SelectionFreq  +  0.40 × PredictiveStrength
-           + 0.20 × FeatureQuality  +  0.15 × StabilityScore
-```
-
-| Component | Source | What It Measures |
-|---|---|---|
-| **SelectionFreq** | Coverage % across targets | Breadth — how many targets need this feature |
-| **PredictiveStrength** | Mean PS over selected targets | Strength — how well it predicts for relevant targets |
-| **FeatureQuality** | VIF + Missing% + Variance | Data health — multicollinearity, completeness, variance |
-| **StabilityScore** | Bootstrap resampling | Consistency across data subsets |
-
-### Final Score Table (FQ=85, Stab=75 assumed constant)
-
-| Feature | Coverage% | PS | FQ | Stab | **Final Score** | **Recommendation** |
-|---|---|---|---|---|---|---|
-| Temperature | 33% | **91.0** | 85 | 75 | **67.5** | 🔵 Recommended |
-| pH | 67% | **76.5** | 85 | 75 | **65.8** | 🔵 Recommended |
-| Flow_Rate | 100% | **74.0** | 85 | 75 | **72.4** | 🔵 Recommended |
-| Pressure | 33% | **88.0** | 85 | 75 | **66.7** | 🔵 Recommended |
-| Vibration | 67% | **63.0** | 85 | 75 | **62.0** | 🟡 Consider |
-
-> SelectionFreq is dampened: `adjusted = Coverage% × max(PS, 25) / 100`
-> This prevents a weak feature from reaching high FinalScore purely through high coverage.
-
----
-
-## Phase 6 — Multicollinearity Deduplication (new)
-
-After all scores and recommendations are assigned, a **post-scoring deduplication pass** runs on the final consensus DataFrame. This prevents two features that measure essentially the same thing from both landing in the Recommended list.
-
-### Why This Is Needed
-
-Every scoring method evaluates features independently. If `DMCTF_Feed` and `CHG_GAS_FLOW_TO_DRYER` are correlated at r=0.9746, both can independently score high on PS and SelectionFreq and both land as Recommended — even though including both adds no information to the model.
-
-The Overview tab already *detects* these pairs. Phase 6 *acts* on them.
-
-### How It Works
-
-**Input:** The final consensus DataFrame + X–X correlation matrix + `corr_threshold` (set in UI, default 0.85)
-
-**Step 1 — Collect pairs**
-
-Scan the X–X correlation matrix for all pairs of Recommended / Highly Recommended features where |r| > corr_threshold. Sort pairs by |r| descending (most redundant first).
-
-**Step 2 — Greedy resolution**
-
-Walk the sorted list. For each pair (A, B) where both are still Recommended/HR:
-
-| Decision | Rule |
-|---|---|
-| **Winner** | Feature with higher FinalScore — already accounts for PS, FQ, Stability |
-| **Loser** | Downgraded from Recommended → **Consider** |
-| **Column stamped** | `MulticollinearWith` = "Winner (|r|=X.XXXX)" |
-| **Reasoning updated** | "Downgraded from Recommended: highly correlated with Winner (|r|=X.XXXX) — include only one of this pair." |
-
-If a feature was already downgraded in a prior pair, it is **skipped** in later pairs — it can only be a loser once.
-
-**Step 3 — Re-derive buckets**
-
-`recommended_features`, `optional_features`, `features_to_remove` are re-derived from the deduped DataFrame. Quick-apply "Use Recommended" draws from this final list.
-
-### Example — Your Dataset
-
-| Pair | |r| | Winner | Loser → |
-|---|---|---|---|
-| K1301 vs Quench tower overhead temp | 0.9998 | K1301 (higher score) | Quench → Consider |
-| K1301 vs Top Reflux Temp | 0.9990 | K1301 | Top Reflux → Consider |
-| Quench vs Top Reflux Temp | 0.9986 | — | **Skipped** (Quench already downgraded) |
-| DMCTF_Feed vs CHG_GAS_FLOW_TO_DRYER | 0.9746 | DMCTF_Feed (higher score) | CHG → Consider |
-
-**Result in Tab2:**
-
-| Feature | Recommendation | MulticollinearWith |
-|---|---|---|
-| DMCTF_Feed | 🔵 Recommended | — |
-| CHG_GAS_FLOW_TO_DRYER | 🟡 Consider | DMCTF_Feed (\|r\|=0.9746) |
-| K1301_1ST_STG_SUCT_TEMP | 🟢 Highly Recommended | — |
-| Quench tower overhead temp | 🟡 Consider | K1301_1ST_STG_SUCT_TEMP (\|r\|=0.9998) |
-| Top Reflux Temp | 🟡 Consider | K1301_1ST_STG_SUCT_TEMP (\|r\|=0.9990) |
-
-### Where It Runs
-
-| Scenario | Where dedup runs |
-|---|---|
-| **Single-Y** | Once, inside `run_auto_feature_selection()` after consensus is built |
-| **Multi-Y** | Once, inside `run_per_target_auto_selection()` after the aggregate consensus is built. Per-target sub-runs do NOT run dedup — this keeps union/coverage calculation clean. |
-
-### Key Design Decisions
-
-| Decision | Reason |
-|---|---|
-| Downgrade to **Consider**, not **Remove** | The feature is still predictive — just redundant given its correlated partner. User can still manually include it. |
-| Keep **higher FinalScore** as winner | FinalScore already encodes PS + FQ + Stability — it's the best composite proxy for "better representative" |
-| **Greedy from highest |r| first** | Resolves the most redundant pairs first; a downgraded feature is never reconsidered |
-| **Only Recommended/HR** scanned | Consider and Weak Feature are already below the bar — no need to further downgrade |
-| Uses **user's corr_threshold** | Same threshold shown in the UI Overview pair table — consistent and transparent |
-
----
-
-## All Scenarios Covered
 
 ### Scenario 1 — Specialist Feature (Strong for 1 Target)
 
@@ -258,7 +799,7 @@ If a feature was already downgraded in a prior pair, it is **skipped** in later 
 | PS used | mean(91, 20, 17) = **42.7** | mean(91) = **91.0** |
 | Result | Consider ❌ | Recommended ✅ |
 
-**Why it works:** `feature_target_map["Temperature"] = ["Product_Quality"]` — only Y1's PS is used.
+**Why it works:** `feature_target_map["Temperature"] = ["Product_Quality"]` — only Y1's PS feeds the aggregation.
 
 ---
 
@@ -271,12 +812,11 @@ If a feature was already downgraded in a prior pair, it is **skipped** in later 
 | PS used | mean(67, 81, 74) = **74.0** | mean(67, 81, 74) = **74.0** |
 | Result | Recommended ✅ | Recommended ✅ |
 
-**Why it works:** When all targets select a feature, both approaches give identical PS.
-The generalist also gets Coverage=100%, boosting SelectionFreq.
+When all targets select a feature, both approaches give identical PS. The generalist also gets SelectionFreq = 100% (3/3 coverage).
 
 ---
 
-### Scenario 3 — Partial Specialist (Selected by Some, Rejected by Others)
+### Scenario 3 — Partial Specialist
 
 > **Vibration**: PS=10 (Y1 rejected), PS=73 (Y2 selected), PS=53 (Y3 selected)
 
@@ -285,7 +825,7 @@ The generalist also gets Coverage=100%, boosting SelectionFreq.
 | PS used | mean(10, 73, 53) = **45.3** | mean(73, 53) = **63.0** |
 | Result | Consider ⚠️ | Consider (higher score) ✅ |
 
-**Why it works:** Y1's irrelevant PS=10 is excluded. Only Y2 and Y3 (which found Vibration useful) contribute.
+Y1's irrelevant PS=10 is excluded from aggregation.
 
 ---
 
@@ -299,120 +839,105 @@ The generalist also gets Coverage=100%, boosting SelectionFreq.
 | PS computed? | Never reaches aggregation |
 | Recommendation | Not shown |
 
-**Why it works:** The union only includes features recommended by at least one target.
-Universally rejected features are dropped early.
-
 ---
 
-### Scenario 5 — Single Y Target (Unchanged Path)
+### Scenario 5 — Single Y Target
 
-> Dataset has only **1 Y target** (e.g., Product_Quality only)
+> Dataset has only 1 Y target
 
 | Step | What Happens |
 |---|---|
-| Engine used | `run_auto_feature_selection` directly — per-target path is NOT entered |
-| Methods run | All 5 methods against the single Y |
-| SelectionFreq | Fraction of 5 methods that selected feature (original meaning) |
-| PS | Normal weighted combination of 5 method scores |
-| Result | Identical to original behavior — completely unaffected |
-
-**Why it works:** The UI branches on `len(y_cols) > 1`. Single-Y always uses the original engine.
+| Engine | `run_auto_feature_selection` directly |
+| SelectionFreq | Fraction of 5 methods that selected feature (0–100%) |
+| PS | Weighted combination of 5 method normalized scores × 100 |
+| Scale factor | 1.0 (no multi-Y softening) |
+| Behaviour | Identical to original — completely unaffected |
 
 ---
 
-### Scenario 6 — Feature in "Consider" for One Target Only
+### Scenario 6 — High Coverage, Low PS (Noisy Generalist)
 
-> **pH** was Consider (not Recommended) for Y2, Recommended for Y1 and Y3
+> Feature selected by all 3 targets but PS=35, 30, 32 everywhere
 
-| Step | Result |
-|---|---|
-| In union? | ✅ Yes — Y1 and Y3 recommended it |
-| In feature_target_map? | `["Product_Quality", "Yield_Rate"]` |
-| PS used | mean(82, 71) = **76.5** |
-| Y2's PS=10 excluded? | ✅ Yes — Y2 did not recommend it |
+```
+SelectionFreq    = 100%
+PS               = mean(35, 30, 32) = 32.3
+adjusted_freq    = 100 × max(32.3, 25) / 100 = 32.3
+Stability        = 75 (assumed)
+FinalScore       = 0.30×32.3 + 0.50×32.3 + 0.20×75
+                 = 9.7 + 16.2 + 15.0 = 40.9
+Recommendation   = Consider
+```
 
-Consider-only targets that did NOT reach Recommended are excluded from PS.
-
----
-
-### Scenario 7 — High Coverage, Low PS (Noisy Generalist)
-
-> A feature selected by all 3 targets but with weak PS everywhere: PS=35, 30, 32
-
-| Component | Value |
-|---|---|
-| Coverage% | 100% |
-| PS (mean selected) | 32.3 |
-| adjusted_freq | 100 × max(32.3, 25) / 100 = **32.3** |
-| FinalScore | 0.25×32.3 + 0.40×32.3 + 0.20×85 + 0.15×75 = **47.5** |
-| Recommendation | 🟡 Consider |
-
-**Why it works:** The damping factor `× max(PS, 25)/100` prevents high Coverage from
-artificially elevating a weak feature. SelectionFreq and PS are coupled — a weak PS
-caps the SelectionFreq contribution.
+The damping factor couples SelectionFreq to PS — a weak-PS feature cannot score high on FinalScore through breadth alone.
 
 ---
 
-### Scenario 8 — Very High N Targets (e.g., 10 Y Variables)
+### Scenario 7 — Recommendation Gate Example
 
-> Feature A: PS=90 for 2 targets (specialist), PS≈10 for 8 targets
+> Feature: FinalScore=78, PS=68, FQ=65, VIF=7.5
 
-| Step | Old Approach | New Approach |
-|---|---|---|
-| Targets in PS calc | All 10 | 2 selected targets only |
-| PS | mean(90,90,10,10,10,10,10,10,10,10) = **26** | mean(90,90) = **90** |
-| Coverage% | 20% | 20% |
-| FinalScore | ~38 → Weak ❌ | ~62 → Consider / Recommended ✅ |
+```
+Early Weak gates: PS=68 ≥ 30, FQ=65 ≥ 20 → pass
 
-The specialist is rescued regardless of how many total targets exist.
+Highly Recommended check (n_targets=1, scale=1.0):
+  FinalScore ≥ 80?   78 < 80 → FAIL
+  → Not Highly Recommended
+
+Recommended check:
+  FinalScore ≥ 60?   78 ≥ 60 ✅
+  PS ≥ 50?           68 ≥ 50 ✅
+  FQ ≥ 40?           65 ≥ 40 ✅
+  → Recommended ✅
+```
+
+This feature just missed Highly Recommended because FinalScore=78 < 80. All it takes is a slightly higher Stability or SelectionFreq to cross the HR threshold.
 
 ---
 
-### Scenario 9 — Multicollinear Pair in Recommended List
+### Scenario 8 — Multi-Y Threshold Softening
+
+> Feature: FinalScore=78, PS=63, FQ=65, VIF=7.5, n_targets=3
+
+```
+scale = 1.0 - 0.08 × (3-1) = 0.84
+effective HR PS threshold  = 70 × 0.84 = 58.8
+effective Rec PS threshold = 50 × 0.84 = 42.0
+
+Highly Recommended check:
+  FinalScore ≥ 80?   78 < 80 → FAIL
+  → Not Highly Recommended
+
+Recommended check:
+  FinalScore ≥ 60?   78 ≥ 60 ✅
+  PS ≥ 42.0?         63 ≥ 42 ✅
+  FQ ≥ 40?           65 ≥ 40 ✅
+  → Recommended ✅
+```
+
+With single-Y the same feature would also be Recommended (PS=63 > 50). The softening only matters when PS is in the 40–70 range.
+
+---
+
+### Scenario 9 — Multicollinear Pair
 
 > **DMCTF_Feed** (FinalScore=68) and **CHG_GAS_FLOW_TO_DRYER** (FinalScore=62), |r|=0.9746
 
-Both features independently scored above the Recommended threshold. Without deduplication, both would land in the "Use Recommended" list even though they carry nearly identical information.
-
-**Phase 5 output (before dedup):**
-
-| Feature | PS | FinalScore | Recommendation |
-|---|---|---|---|
-| DMCTF_Feed | 72 | 68.0 | 🔵 Recommended |
-| CHG_GAS_FLOW_TO_DRYER | 65 | 62.0 | 🔵 Recommended |
-
-**Phase 6 dedup pass:**
+Both independently exceeded the Recommended threshold. Deduplication pass:
 
 | Step | Action |
 |---|---|
-| Pair detected | DMCTF_Feed ↔ CHG_GAS_FLOW_TO_DRYER, \|r\|=0.9746 > threshold(0.85) |
-| Winner | DMCTF_Feed — higher FinalScore (68 > 62) |
-| Loser downgraded | CHG_GAS_FLOW_TO_DRYER → Consider |
-| Column stamped | `MulticollinearWith` = "DMCTF_Feed (\|r\|=0.9746)" |
+| Pair detected | DMCTF_Feed ↔ CHG_GAS_FLOW_TO_DRYER, \|r\|=0.9746 > 0.85 |
+| Winner | DMCTF_Feed — FinalScore 68 > 62 |
+| Loser | CHG_GAS_FLOW_TO_DRYER → Consider |
+| MulticollinearWith | "DMCTF_Feed (\|r\|=0.9746)" |
 
-**Phase 6 output (after dedup):**
+Final Tab2 result:
 
-| Feature | FinalScore | Recommendation | MulticollinearWith |
-|---|---|---|---|
-| DMCTF_Feed | 68.0 | 🔵 Recommended | — |
-| CHG_GAS_FLOW_TO_DRYER | 62.0 | 🟡 Consider | DMCTF_Feed (\|r\|=0.9746) |
-
-**Why it works:** The user can include CHG_GAS_FLOW_TO_DRYER manually if domain knowledge requires it, but the default "Use Recommended" set is clean — no redundant pair.
-
----
-
-## Final Recommendation Summary
-
-| Recommendation | Criteria |
-|---|---|
-| 🟢 **Highly Recommended** | FinalScore ≥ 80 AND PS ≥ 70 AND FQ ≥ 60 AND VIF ≤ 10 |
-| 🔵 **Recommended** | FinalScore ≥ 60 AND PS ≥ 50 AND FQ ≥ 40 |
-| 🟡 **Consider** | FinalScore ≥ 40 |
-| 🔴 **Weak Feature** | FinalScore < 40 OR (PS < 30 AND FQ < 20) |
-
-> Thresholds are softened automatically for multi-Y datasets via the `n_targets` parameter
-> in `_assign_recommendation()` — each additional Y target reduces PS thresholds by 8%
-> (capped at 4 extra targets = 32% max softening).
+| Feature | Recommendation | MulticollinearWith |
+|---|---|---|
+| DMCTF_Feed | 🔵 Recommended | — |
+| CHG_GAS_FLOW_TO_DRYER | 🟡 Consider | DMCTF_Feed (\|r\|=0.9746) |
 
 ---
 
@@ -420,13 +945,14 @@ Both features independently scored above the Recommended threshold. Without dedu
 
 | Component | Status |
 |---|---|
-| `_compute_predictive_strength()` | Unchanged — called per target |
+| `_compute_predictive_strength()` | Unchanged — called per target independently |
 | `_compute_feature_quality()` | Unchanged — VIF + missing + variance on full X |
 | `_compute_stability_score()` | Unchanged — bootstrap on full X/Y |
 | `_assign_recommendation()` | Unchanged — same thresholds, called before dedup |
 | `_generate_reasoning()` | Unchanged — uses best-target method results; dedup appends a note |
-| `_dedup_multicollinear()` | **New** — post-scoring pass; does NOT change scores, only Recommendation + MulticollinearWith column |
-| Single-Y path | Unchanged — uses `run_auto_feature_selection` directly (dedup runs once at end) |
-| All UI tabs | Unchanged — tab2, tab3, tab4, tab5 work via pseudo AutoSelectionResult |
-| Tab2 | Enhanced — now shows `MulticollinearWith` column for downgraded features |
-| Tab6 | Enhanced — now shows per-target PS breakdown table |
+| `_dedup_multicollinear()` | **New** — post-scoring pass only; does NOT change scores |
+| Single-Y path | Unchanged — uses `run_auto_feature_selection` directly |
+| All UI tabs | Unchanged — Tab2–Tab5 work via pseudo AutoSelectionResult |
+| Tab2 | Enhanced — `MulticollinearWith` column for downgraded features |
+| Tab6 | Enhanced — per-target PS breakdown table |
+| All config thresholds | In `config/settings.py` only — never hardcoded |

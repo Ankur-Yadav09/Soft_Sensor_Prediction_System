@@ -1065,7 +1065,7 @@ def _aggregate_consensus(
         freq_score = freq * 100.0
 
         ps   = ps_scores.get(feat, 0.0)
-        fq   = fq_scores.get(feat, 70.0)
+        fq   = fq_scores.get(feat, 70.0)   # still computed for VIF gate; not in FinalScore
         stab = stab_scores.get(feat, 50.0)
 
         # Dampen selection-frequency bonus for features with very low predictive
@@ -1073,12 +1073,12 @@ def _aggregate_consensus(
         # appearing in many method top-k lists.
         adjusted_freq_score = freq_score * (max(ps, 25.0) / 100.0)
 
-        # FinalScore = weighted combination of the four components (weights from settings.py):
-        #   SelectionFreq (25%) + PredictiveStrength (40%) + FeatureQuality (20%) + Stability (15%)
+        # FinalScore = SelectionFreq (30%) + PredictiveStrength (50%) + Stability (20%)
+        # FQ is excluded: missing/variance are handled in preprocessing upstream.
+        # VIF still enforces quality as a hard gate in _assign_recommendation().
         final_score = round(
-            FS_WEIGHT_SELECTION_FREQ * adjusted_freq_score
+            FS_WEIGHT_SELECTION_FREQ       * adjusted_freq_score
             + FS_WEIGHT_PREDICTIVE_STRENGTH * ps
-            + FS_WEIGHT_FEATURE_QUALITY     * fq
             + FS_WEIGHT_STABILITY           * stab,
             1,
         )

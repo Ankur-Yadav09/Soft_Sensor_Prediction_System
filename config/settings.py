@@ -65,10 +65,11 @@ TREND_EPSILON: float = 1e-5
 # Feature Selection Scoring
 # ---------------------------------------------------------------------------
 # Component weights (sum = 1.0)
-FS_WEIGHT_SELECTION_FREQ:       float = 0.25
-FS_WEIGHT_PREDICTIVE_STRENGTH:  float = 0.40
-FS_WEIGHT_FEATURE_QUALITY:      float = 0.20
-FS_WEIGHT_STABILITY:            float = 0.15
+# FQ removed — missing/variance handled upstream in preprocessing; VIF enforced via gate.
+FS_WEIGHT_SELECTION_FREQ:       float = 0.30
+FS_WEIGHT_PREDICTIVE_STRENGTH:  float = 0.50
+FS_WEIGHT_FEATURE_QUALITY:      float = 0.00   # unused — kept for import compatibility
+FS_WEIGHT_STABILITY:            float = 0.20
 
 # Predictive Strength sub-weights — 5 active scoring methods (must sum to 1.0)
 # Permutation Importance: robust model-agnostic signal, highest weight.
