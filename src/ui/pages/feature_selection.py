@@ -428,8 +428,8 @@ def _render_analysis_results(
     with tab2:
         st.markdown("#### Feature Ranking by Final Score")
         st.caption(
-            "**Final Score** = 25% × Selection Frequency + 40% × Predictive Strength "
-            "+ 20% × Feature Quality + 15% × Stability Score"
+            "**Final Score** = 30% × Selection Frequency (damped) + 50% × Predictive Strength "
+            "+ 20% × Stability Score"
         )
 
         def _style_rec(val: str) -> str:
