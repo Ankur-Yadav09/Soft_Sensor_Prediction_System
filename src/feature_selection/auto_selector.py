@@ -11,19 +11,15 @@ Advanced Filter : mRMR (Maximum Relevance Minimum Redundancy)
 Feature Importance: Permutation Importance
 Intrinsic       : Elastic Net
 
-Informational Methods (can be run manually; do not affect scores)
------------------------------------------------------------------
-Supervised      : F-Test (ANOVA)
-Feature Importance: Random Forest, XGBoost, LightGBM, SHAP
-Intrinsic       : Lasso
-Wrapper         : RFE, Sequential Forward / Backward Selection
-Dimensionality  : PCA Loadings
-
 Public API
 ----------
 run_auto_feature_selection(X_df, y_df, top_k, enabled_methods,
                             corr_threshold, vif_threshold)
     -> AutoSelectionResult
+
+run_per_target_auto_selection(X_df, y_df, top_k, enabled_methods,
+                               corr_threshold, vif_threshold)
+    -> PerTargetSelectionResult   # preferred for multi-Y datasets
 """
 from __future__ import annotations
 
@@ -48,7 +44,6 @@ from config.settings import (
     FS_HIGHLY_REC_MAX_VIF,
     FS_HIGHLY_REC_MIN_FINAL,
     FS_HIGHLY_REC_MIN_PRED_STRENGTH,
-    FS_HIGHLY_REC_MIN_QUALITY,
     FS_MULTI_Y_PS_SCALE,
     # Predictive Strength sub-weights for the 5 core scoring methods
     FS_PS_CORR_WEIGHT,   # Target Correlation
@@ -58,13 +53,11 @@ from config.settings import (
     FS_PS_EN_WEIGHT,     # Elastic Net
     FS_RECOMMENDED_MIN_FINAL,
     FS_RECOMMENDED_MIN_PRED_STRENGTH,
-    FS_RECOMMENDED_MIN_QUALITY,
     FS_CONSIDER_MIN_FINAL,
     FS_STABILITY_MAX_ROWS,
     FS_STABILITY_RUNS,
     FS_STABILITY_SAMPLE_FRAC,
     FS_WEAK_MAX_PRED_STRENGTH,
-    FS_WEAK_MAX_QUALITY,
     FS_WEIGHT_FEATURE_QUALITY,
     FS_WEIGHT_PREDICTIVE_STRENGTH,
     FS_WEIGHT_SELECTION_FREQ,
@@ -83,20 +76,8 @@ _MAX_ROWS_WRAPPER = 5_000   # rows sampled for permutation importance
 _MAX_FEATURES_VIF =    80   # skip VIF computation if more features (performance)
 _MAX_FEATURES_NEW =   100   # skip permutation importance if more features (performance)
 
-# Active method IDs — 5 scoring methods plus rf_importance (internal stability use only)
-ALL_METHOD_IDS = [
-    "target_correlation",
-    "mutual_information",
-    "mrmr",
-    "permutation_importance",
-    "elasticnet",
-    "rf_importance",   # internal only: called directly from _compute_stability_score
-]
-
-# The 5 core methods that drive SelectionFrequency, PredictiveStrength, and
-# FinalScore. Only these methods are enabled by default in the run loop.
-# Adding any other method ID to enabled_methods at call time will cause it to
-# run but its results will be treated as informational (see INFORMATIONAL_METHOD_IDS).
+# The 5 core scoring methods that drive SelectionFrequency, PredictiveStrength,
+# and FinalScore. Only these method IDs are valid in the enabled_methods list.
 _SCORING_METHOD_IDS: frozenset = frozenset([
     "target_correlation",       # Supervised: direct linear signal with each target
     "mutual_information",       # Supervised: captures non-linear target dependencies
@@ -105,19 +86,12 @@ _SCORING_METHOD_IDS: frozenset = frozenset([
     "elasticnet",               # Intrinsic: L1+L2 regularisation coefficient magnitude
 ])
 
-# rf_importance is the only remaining informational method — it runs inside
-# _compute_stability_score but never appears in the user-facing method list.
-INFORMATIONAL_METHOD_IDS: frozenset = frozenset([
-    "rf_importance",
-])
-
 METHOD_LABELS: Dict[str, str] = {
     "target_correlation":     "Target Correlation",
     "mutual_information":     "Mutual Information",
     "mrmr":                   "mRMR",
     "permutation_importance": "Permutation Importance",
     "elasticnet":             "Elastic Net",
-    "rf_importance":          "Random Forest Importance",  # internal; stability only
 }
 
 METHOD_CATEGORIES: Dict[str, str] = {
@@ -126,7 +100,6 @@ METHOD_CATEGORIES: Dict[str, str] = {
     "mrmr":                   "Advanced Filter",
     "permutation_importance": "Feature Importance",
     "elasticnet":             "Intrinsic",
-    "rf_importance":          "Feature Importance",  # internal; stability only
 }
 
 # Per-method contribution weights for the Predictive Strength composite score.
@@ -232,10 +205,6 @@ def _normalize_scores(scores: Dict[str, float]) -> Dict[str, float]:
 
 def _to_2d(y: np.ndarray) -> np.ndarray:
     return y.reshape(-1, 1) if y.ndim == 1 else y
-
-
-def _avg_y(y_2d: np.ndarray) -> np.ndarray:
-    return y_2d.mean(axis=1)
 
 
 def _sample(X: np.ndarray, y: np.ndarray, max_rows: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -448,31 +417,7 @@ def _m_mutual_information(
 
 
 # ---------------------------------------------------------------------------
-# Method 4 – Random Forest Importance
-# ---------------------------------------------------------------------------
-
-def _m_rf_importance(
-    X: np.ndarray, y: np.ndarray, names: List[str], top_k: int
-) -> MethodResult:
-    try:
-        y2 = _to_2d(y)
-        # RF natively supports multi-output
-        rf = RandomForestRegressor(
-            n_estimators=100, max_depth=8, random_state=42, n_jobs=-1
-        )
-        rf.fit(X, y2 if y2.shape[1] > 1 else y2.ravel())
-        imp = rf.feature_importances_
-        raw = {feat: float(imp[i]) for i, feat in enumerate(names)}
-        return _build_result(
-            "rf_importance", raw, names, top_k,
-            notes="Mean Decrease Impurity (MDI)",
-        )
-    except Exception as e:
-        return _failed("rf_importance", names, top_k, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Method 5 – Elastic Net (Intrinsic)
+# Method 3 – Elastic Net (Intrinsic)
 # ---------------------------------------------------------------------------
 
 def _m_elasticnet(
@@ -516,7 +461,7 @@ def _m_elasticnet(
 
 
 # ---------------------------------------------------------------------------
-# Method 6 – mRMR (Advanced Filter)
+# Method 4 – mRMR (Advanced Filter)
 # ---------------------------------------------------------------------------
 
 def _m_mrmr(
@@ -524,7 +469,6 @@ def _m_mrmr(
 ) -> MethodResult:
     try:
         y2 = _to_2d(y)
-        y_avg = _avg_y(y2)
 
         # Relevance: average MI with each target
         mi_matrix = [
@@ -579,7 +523,7 @@ def _m_mrmr(
 
 
 # ---------------------------------------------------------------------------
-# Method 14 – Permutation Importance (Feature Importance)
+# Method 5 – Permutation Importance (Feature Importance)
 # ---------------------------------------------------------------------------
 
 def _m_permutation_importance(
@@ -927,7 +871,10 @@ def _assign_recommendation(
 ) -> str:
     """Multi-condition recommendation assignment.
 
-    FQ quality gates removed — missing/variance handled upstream in preprocessing.
+    The `quality` parameter (Feature Quality score) is accepted for call-site
+    compatibility — _aggregate_from_per_target_results includes FQ in FinalScore —
+    but is not used as a gate here because missing/variance issues are handled
+    upstream in preprocessing.
     VIF is retained as the sole data-health gate for Highly Recommended.
     PS thresholds scale down gently with additional Y targets (FS_MULTI_Y_PS_SCALE).
     FS_WEAK_MAX_PRED_STRENGTH is intentionally not scaled — truly weak stays weak.
