@@ -104,6 +104,7 @@ export interface MethodResultOut {
   selected_features: string[]
   notes: string
   success: boolean
+  raw_scores: Record<string, number>
 }
 
 export interface FeatureSelectionResult {
@@ -161,6 +162,10 @@ export interface TrainingResult {
   avg_mae: number
   actual_epochs: number | null
   early_stopped: boolean
+  epoch_recon_losses: number[]
+  epoch_pred_losses: number[]
+  val_recon_losses: number[]
+  val_pred_losses: number[]
 }
 
 export interface PredictResult {

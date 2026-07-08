@@ -45,6 +45,10 @@ def _method_results_out(results: List[MethodResult]) -> List[dict]:
             "selected_features": r.selected_features,
             "notes": r.notes,
             "success": r.success,
+            # raw_scores (not normalised) is what the ranking-matrix visualization
+            # ranks features by, per method — mirrors _plot_ranking_matrix's
+            # rank_maps construction in src/ui/pages/feature_selection.py.
+            "raw_scores": r.raw_scores,
         }
         for r in results
     ]

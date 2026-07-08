@@ -6,6 +6,7 @@ import { listProjects } from '../../api/preprocess'
 import { runPredict } from '../../api/predict'
 import { Callout } from '../../components/Callout'
 import { StepHeading } from '../../components/StepHeading'
+import { PredictCharts } from './PredictCharts'
 
 function downloadCsv(rows: Record<string, unknown>[], filename: string) {
   if (rows.length === 0) return
@@ -168,6 +169,8 @@ export function PredictPage() {
               </table>
             </div>
           )}
+
+          <PredictCharts result={result} />
 
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>

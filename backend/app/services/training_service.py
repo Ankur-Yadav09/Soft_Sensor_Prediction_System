@@ -76,6 +76,13 @@ def _finish(project: project_service.ProjectArtifacts, algorithm: str, wrapper, 
         "avg_mae": avg_mae,
         "actual_epochs": loss_history.get("actual_epochs"),
         "early_stopped": loss_history.get("early_stopped", False),
+        # Present (non-empty) only for DAE/LSTM — tree ensembles and Kalman
+        # Filter return empty lists here (see train_sklearn.py/train_kalman.py),
+        # which the frontend uses to decide whether to render loss curves.
+        "epoch_recon_losses": loss_history.get("epoch_recon_losses", []),
+        "epoch_pred_losses": loss_history.get("epoch_pred_losses", []),
+        "val_recon_losses": loss_history.get("val_recon_losses", []),
+        "val_pred_losses": loss_history.get("val_pred_losses", []),
     }
 
 

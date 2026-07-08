@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { listProjects } from '../../api/preprocess'
 import { submitTraining } from '../../api/training'
 import { Callout } from '../../components/Callout'
+import { LineChart } from '../../components/LineChart'
 import { StepHeading } from '../../components/StepHeading'
 import { useJobPolling } from '../../hooks/useJobPolling'
 import { ALGO_DEFAULTS, ALGO_FIELDS, ALGORITHMS, toApiHyperparameters } from './algorithmFields'
@@ -185,6 +186,31 @@ export function TrainPage() {
             {result.actual_epochs != null && <> · Epochs: {result.actual_epochs}</>}
             {result.early_stopped && <> · Early stopped</>}
           </p>
+
+          {result.epoch_pred_losses.length > 0 && (
+            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginTop: '1rem' }}>
+              {result.epoch_recon_losses.length > 0 && (
+                <LineChart
+                  title="Reconstruction Loss"
+                  xLabel="Epoch"
+                  yLabel="Loss"
+                  series={[
+                    { label: 'Train', color: '#2563eb', data: result.epoch_recon_losses },
+                    { label: 'Validation', color: '#10b981', data: result.val_recon_losses },
+                  ]}
+                />
+              )}
+              <LineChart
+                title="Prediction Loss"
+                xLabel="Epoch"
+                yLabel="Loss"
+                series={[
+                  { label: 'Train', color: '#2563eb', data: result.epoch_pred_losses },
+                  { label: 'Validation', color: '#10b981', data: result.val_pred_losses },
+                ]}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

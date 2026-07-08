@@ -3,6 +3,7 @@ import { Callout } from '../../components/Callout'
 import { DataTable } from '../../components/DataTable'
 import { Tabs } from '../../components/Tabs'
 import { RECOMMENDATION_COLOR } from './methodMeta'
+import { RankingMatrix } from './RankingMatrix'
 import type { FeatureConsensusRow, FeatureSelectionResult } from '../../api/types'
 
 const REC_CATEGORIES = ['Highly Recommended', 'Recommended', 'Consider', 'Weak Feature']
@@ -268,6 +269,7 @@ export function FeatureSelectionResults({ result }: { result: FeatureSelectionRe
   const tabs = [
     { label: '📊 Overview', content: <OverviewTab result={result} /> },
     { label: '🏆 Consensus Rankings', content: <ConsensusTab result={result} /> },
+    { label: '📈 Visualizations', content: <RankingMatrix result={result} /> },
     { label: '🎯 Recommendations', content: <RecommendationsTab result={result} /> },
     { label: '🔬 Method Details', content: <MethodDetailsTab result={result} /> },
   ]
