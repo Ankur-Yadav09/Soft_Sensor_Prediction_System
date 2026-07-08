@@ -10,6 +10,7 @@ LSTM           — PyTorch LSTMPredictor  (model.pth)
 Random Forest  — sklearn               (model.pkl)
 XGBoost        — xgboost               (model.pkl)
 LightGBM       — lightgbm              (model.pkl)
+Kalman Filter  — recursive linear filter (model.pkl)
 
 Directory layout
 ----------------
@@ -39,7 +40,7 @@ from config.settings import MODEL_DIR
 from src.models.architecture import IndustrialDAE
 from src.models.wrappers import DAEWrapper, LSTMPredictor, LSTMWrapper, SklearnWrapper
 
-_SKLEARN_TYPES = {"Random Forest", "XGBoost", "LightGBM"}
+_SKLEARN_TYPES = {"Random Forest", "XGBoost", "LightGBM", "Kalman Filter"}
 
 
 # ---------------------------------------------------------------------------

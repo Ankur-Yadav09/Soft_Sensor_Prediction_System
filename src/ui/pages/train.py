@@ -10,6 +10,7 @@ Random Forest — sklearn RandomForestRegressor (multi-output)
 XGBoost       — xgboost XGBRegressor via MultiOutputRegressor
 LightGBM      — lightgbm LGBMRegressor via MultiOutputRegressor
 LSTM          — PyTorch LSTMPredictor with tiled-window sequences
+Kalman Filter — Kalman-Filter-based Recursive Least Squares (per-target linear filter)
 
 Features
 --------
@@ -48,12 +49,13 @@ from src.persistence.model_store import (
     load_model_from_disk,
     save_model_to_disk,
 )
+from src.training.train_kalman import train_kalman_model
 from src.training.train_lstm import train_lstm
 from src.training.train_sklearn import train_sklearn_model
 from src.training.trainer import train_model
 from src.ui.components import render_loss_curves
 
-_MODEL_OPTIONS = ["DAE", "Random Forest", "XGBoost", "LightGBM", "LSTM"]
+_MODEL_OPTIONS = ["DAE", "Random Forest", "XGBoost", "LightGBM", "LSTM", "Kalman Filter"]
 
 
 def render() -> None:
@@ -241,6 +243,36 @@ def render() -> None:
                 "Early Stop Patience", 0, 100, DEFAULT_EARLY_STOP_PATIENCE, step=5
             )
 
+    # --- Kalman Filter -------------------------------------------------
+    elif model_type == "Kalman Filter":
+        col1, col2 = st.columns(2)
+        with col1:
+            kf_process_noise = st.number_input(
+                "Process Noise (Q)", 1e-6, 1.0, 1e-4, format="%.6f",
+                help="How much the estimated coefficients are allowed to drift "
+                     "between samples. Higher = faster adaptation, noisier fit.",
+            )
+            kf_epochs = st.slider(
+                "Training Passes (Epochs)", 1, 50, 10,
+                help="Number of shuffled passes the filter makes over the "
+                     "training data to converge.",
+            )
+        with col2:
+            kf_measurement_noise = st.number_input(
+                "Measurement Noise (R)", 1e-4, 10.0, 1e-2, format="%.4f",
+                help="Expected noise in the target measurements. Higher = "
+                     "the filter trusts its prior estimate more than new data.",
+            )
+            kf_initial_covariance = st.slider(
+                "Initial Covariance (P0)", 0.1, 10.0, 1.0,
+                help="Initial uncertainty in the coefficient estimates.",
+            )
+        st.caption(
+            "Kalman Filter is fit as a recursive linear estimator "
+            "(Kalman-Filter-based Recursive Least Squares) — one filter per "
+            "target column, trained over shuffled passes of the data."
+        )
+
     # ------------------------------------------------------------------ #
     # Train button
     # ------------------------------------------------------------------ #
@@ -365,6 +397,25 @@ def render() -> None:
                     y_cols         = st.session_state.y_cols,
                     scaler_y       = st.session_state.scaler_y,
                     model_type     = model_type,
+                    **hparams,
+                )
+
+            elif model_type == "Kalman Filter":
+                hparams = {
+                    "process_noise":      kf_process_noise,
+                    "measurement_noise":  kf_measurement_noise,
+                    "initial_covariance": kf_initial_covariance,
+                    "n_epochs":           kf_epochs,
+                    "random_state":       42,
+                }
+                wrapper, loss_history = train_kalman_model(
+                    X_train        = st.session_state.X_train,
+                    y_train_scaled = st.session_state.y_train,
+                    X_test         = st.session_state.X_test,
+                    y_test_scaled  = st.session_state.y_test,
+                    y_test_raw     = st.session_state.y_test_raw,
+                    y_cols         = st.session_state.y_cols,
+                    scaler_y       = st.session_state.scaler_y,
                     **hparams,
                 )
 
