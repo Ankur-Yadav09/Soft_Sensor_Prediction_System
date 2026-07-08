@@ -6,11 +6,26 @@ export async function listDatasets(): Promise<DatasetSummary[]> {
   return data.datasets
 }
 
-export async function uploadDataset(file: File): Promise<DatasetSummary> {
+export interface UploadDatasetOptions {
+  datasetName?: string
+  plant?: string
+  unit?: string
+  onProgress?: (percent: number) => void
+}
+
+export async function uploadDataset(file: File, options: UploadDatasetOptions = {}): Promise<DatasetSummary> {
   const form = new FormData()
   form.append('file', file)
+  if (options.datasetName) form.append('dataset_name', options.datasetName)
+  if (options.plant) form.append('plant', options.plant)
+  if (options.unit) form.append('unit', options.unit)
   const { data } = await apiClient.post<DatasetSummary>('/datasets/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    onUploadProgress: (e) => {
+      if (options.onProgress && e.total) {
+        options.onProgress(Math.round((e.loaded / e.total) * 100))
+      }
+    },
   })
   return data
 }

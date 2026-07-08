@@ -3,6 +3,9 @@ export interface DatasetSummary {
   uploaded_at: string
   rows: number
   cols: number
+  plant?: string | null
+  unit?: string | null
+  status?: string
 }
 
 export interface DatasetPreview {

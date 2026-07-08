@@ -1,8 +1,10 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { applyPreprocessing } from '../../api/preprocess'
 import { Callout } from '../../components/Callout'
 import { SectionBanner } from '../../components/SectionBanner'
+import { useActiveProject } from '../../state/ActiveProjectContext'
 
 interface FinalApplyProps {
   datasetName: string
@@ -14,14 +16,17 @@ const SPLIT_METHODS = ['Random Split', 'Stratified Split', 'Sequential Split']
 
 export function FinalApply({ datasetName, xCols, yCols }: FinalApplyProps) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const { setActiveProject } = useActiveProject()
   const [imputationMethod, setImputationMethod] = useState('Median')
   const [splitMethod, setSplitMethod] = useState('Random Split')
   const [trainRatio, setTrainRatio] = useState(0.8)
 
   const applyMutation = useMutation({
     mutationFn: applyPreprocessing,
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] })
+      setActiveProject(data.project_id)
     },
   })
 
@@ -101,11 +106,16 @@ export function FinalApply({ datasetName, xCols, yCols }: FinalApplyProps) {
       )}
 
       {applyMutation.data && (
-        <Callout variant="success">
-          Preprocessing complete — {applyMutation.data.x_cols.length} X features, {applyMutation.data.y_cols.length}{' '}
-          Y target(s). Created project <code>{applyMutation.data.project_id}</code> — {applyMutation.data.n_train}{' '}
-          train rows / {applyMutation.data.n_test} test rows. Proceed to the <strong>Train Model</strong> page.
-        </Callout>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <Callout variant="success">
+            Preprocessing complete — {applyMutation.data.x_cols.length} X features, {applyMutation.data.y_cols.length}{' '}
+            Y target(s). Created project <code>{applyMutation.data.project_id}</code> — {applyMutation.data.n_train}{' '}
+            train rows / {applyMutation.data.n_test} test rows.
+          </Callout>
+          <button style={{ alignSelf: 'flex-start' }} onClick={() => navigate('/train')}>
+            Continue to Train Model →
+          </button>
+        </div>
       )}
     </div>
   )

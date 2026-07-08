@@ -5,13 +5,14 @@ import { getFeatureStats } from '../../api/preprocess'
 import { Callout } from '../../components/Callout'
 import { StepHeading } from '../../components/StepHeading'
 import { Tabs } from '../../components/Tabs'
+import { useActiveDataset } from '../../state/ActiveDatasetContext'
 import { AutomatedPreprocessingTab } from './AutomatedPreprocessingTab'
 import { BasicPreprocessingTab } from './BasicPreprocessingTab'
 import { DataUnderstandingTab } from './DataUnderstandingTab'
 import type { CleaningResponse } from '../../api/preprocess'
 
 export function PreprocessPage() {
-  const [datasetName, setDatasetName] = useState('')
+  const { activeDataset: datasetName, setActiveDataset: setDatasetName } = useActiveDataset()
   const [lastCleaned, setLastCleaned] = useState<CleaningResponse | null>(null)
 
   const datasetsQuery = useQuery({ queryKey: ['datasets'], queryFn: listDatasets })
@@ -53,6 +54,11 @@ export function PreprocessPage() {
             </option>
           ))}
         </select>
+        {datasetName && !lastCleaned && (
+          <p className="caption" style={{ marginTop: '0.4rem' }}>
+            Carried over from Connect Process Data. Pick a different dataset above if needed.
+          </p>
+        )}
         {lastCleaned && (
           <div style={{ marginTop: '0.75rem' }}>
             <Callout variant="success">
@@ -71,7 +77,7 @@ export function PreprocessPage() {
       </div>
 
       {!datasetName && (
-        <Callout variant="warning">Please select a dataset above (upload one on the Upload Data page first).</Callout>
+        <Callout variant="warning">Please select a dataset above (connect one on the Connect Process Data page first).</Callout>
       )}
 
       {datasetName && numericCols.length > 0 && (

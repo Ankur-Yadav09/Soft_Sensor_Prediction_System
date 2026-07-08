@@ -9,6 +9,7 @@ import { SectionBanner } from '../../components/SectionBanner'
 import { StepHeading } from '../../components/StepHeading'
 import { Tabs } from '../../components/Tabs'
 import { useJobPolling } from '../../hooks/useJobPolling'
+import { useActiveDataset } from '../../state/ActiveDatasetContext'
 import { FeatureSelectionResults } from './FeatureSelectionResults'
 import { FinalApply } from './FinalApply'
 import { ManualVariableSelection } from './ManualVariableSelection'
@@ -18,7 +19,7 @@ import type { FeatureSelectionResult } from '../../api/types'
 type Pathway = 'configure' | 'automated'
 
 export function FeatureSelectionPage() {
-  const [datasetName, setDatasetName] = useState('')
+  const { activeDataset: datasetName, setActiveDataset: setDatasetName } = useActiveDataset()
   const [yCols, setYCols] = useState<Set<string>>(new Set())
   const [pathway, setPathway] = useState<Pathway>('configure')
 
@@ -137,6 +138,11 @@ export function FeatureSelectionPage() {
               </option>
             ))}
           </select>
+          {datasetName && (
+            <p className="caption" style={{ marginTop: '0.4rem' }}>
+              Carried over from your last step. Pick a different dataset above if needed.
+            </p>
+          )}
         </label>
 
         {datasetName && (

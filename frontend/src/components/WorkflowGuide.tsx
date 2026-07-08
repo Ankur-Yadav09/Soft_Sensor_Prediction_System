@@ -1,5 +1,5 @@
 const STEPS = [
-  ['1', 'Upload Data', 'Upload an Excel/CSV file or load a previously stored dataset.'],
+  ['1', 'Connect Process Data', 'Upload an Excel/CSV file or load a previously stored dataset.'],
   ['2', 'Preprocessing', 'Clean, impute, and treat outliers in the raw data.'],
   ['3', 'Feature Selection', 'Pick input (X) and target (Y) columns.'],
   ['4', 'Train Model', 'Train a DAE, tree ensemble, LSTM, or Kalman Filter model.'],

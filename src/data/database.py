@@ -43,6 +43,15 @@ from config.settings import DB_PATH
 # ---------------------------------------------------------------------------
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, coltype: str) -> None:
+    """Idempotently add a column to an existing table (SQLite has no
+    ``ADD COLUMN IF NOT EXISTS``). Safe to call on every startup — existing
+    rows get ``NULL`` for the new column, nothing is dropped or rewritten."""
+    cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
 def init_db() -> None:
     """Create all required tables if they do not already exist."""
     with sqlite3.connect(DB_PATH) as conn:
@@ -75,6 +84,12 @@ def init_db() -> None:
             )
             """
         )
+        # Added for the "Connect Process Data" page's Plant/System-Unit
+        # metadata. list_datasets_from_db() below deliberately keeps its
+        # original 4-column SELECT unchanged (Streamlit's upload.py builds a
+        # fixed-width DataFrame from it) — see list_datasets_with_metadata().
+        _ensure_column(conn, "datasets", "plant", "TEXT")
+        _ensure_column(conn, "datasets", "unit", "TEXT")
         conn.commit()
 
 
@@ -103,12 +118,17 @@ def _sanitize_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def save_dataset_to_db(name: str, df: pd.DataFrame) -> None:
+def save_dataset_to_db(
+    name: str, df: pd.DataFrame, plant: Optional[str] = None, unit: Optional[str] = None
+) -> None:
     """
     Upsert a DataFrame into the database.
 
     If a dataset with the same *name* already exists it is replaced
-    (INSERT OR REPLACE semantics).
+    (INSERT OR REPLACE semantics) — note this also resets plant/unit to
+    whatever is passed (or NULL if omitted), since REPLACE rewrites the
+    whole row; existing callers that omit plant/unit are unaffected in
+    practice since re-uploading the exact same filename is rare.
     """
     blob = _sanitize_for_parquet(df).to_parquet()
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -116,10 +136,10 @@ def save_dataset_to_db(name: str, df: pd.DataFrame) -> None:
         conn.execute(
             """
             INSERT OR REPLACE INTO datasets
-                (name, upload_time, num_rows, num_cols, data)
-            VALUES (?, ?, ?, ?, ?)
+                (name, upload_time, num_rows, num_cols, data, plant, unit)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (name, now, len(df), len(df.columns), blob),
+            (name, now, len(df), len(df.columns), blob, plant, unit),
         )
         conn.commit()
 
@@ -133,6 +153,23 @@ def list_datasets_from_db() -> List[Tuple]:
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
             "SELECT name, upload_time, num_rows, num_cols "
+            "FROM datasets ORDER BY upload_time DESC"
+        ).fetchall()
+    return rows
+
+
+def list_datasets_with_metadata() -> List[Tuple]:
+    """
+    Like list_datasets_from_db(), plus Plant/System-Unit metadata.
+
+    Each row is ``(name, upload_time, num_rows, num_cols, plant, unit)``.
+    Kept as a separate function (rather than changing list_datasets_from_db's
+    return shape) so Streamlit's upload.py — which builds a fixed 4-column
+    DataFrame straight from list_datasets_from_db()'s rows — is unaffected.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT name, upload_time, num_rows, num_cols, plant, unit "
             "FROM datasets ORDER BY upload_time DESC"
         ).fetchall()
     return rows

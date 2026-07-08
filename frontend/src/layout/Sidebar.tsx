@@ -5,7 +5,7 @@ import { NavLink } from 'react-router-dom'
 // has 3 leftover entries from the removed What-If/History/Comparison pages.
 const NAV_ITEMS = [
   { to: '/', label: 'Overview', icon: '📈' },
-  { to: '/upload', label: 'Upload Data', icon: '📤' },
+  { to: '/upload', label: 'Connect Process Data', icon: '📤' },
   { to: '/preprocess', label: 'Preprocessing', icon: '⚙️' },
   { to: '/feature-selection', label: 'Feature Selection', icon: '🔍' },
   { to: '/train', label: 'Train Model', icon: '🧠' },

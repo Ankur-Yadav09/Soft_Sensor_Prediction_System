@@ -22,7 +22,25 @@
       "Bash(pwd -W)",
       "Bash(node -e \"console.log\\(process.cwd\\(\\)\\)\")",
       "PowerShell(Get-CimInstance *)",
-      "PowerShell(Stop-Process *)"
+      "PowerShell(Stop-Process *)",
+      "Bash(./soft_sensor/Scripts/python.exe -m uvicorn backend.app.main:app --reload --port 8000)",
+      "Bash(curl -s -X POST http://127.0.0.1:8000/api/datasets/upload -F 'file=@C:\\\\Users\\\\ANKUR~1.YAD\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\test_upload.csv;filename=test_plant_unit.csv' -F 'dataset_name=Ethylene Test Run 1' -F 'plant=Ethylene Plant - Complex 1' -F 'unit=Furnace / Pyrolysis')",
+      "Bash(curl -s http://127.0.0.1:8000/api/datasets)",
+      "Bash(curl -s http://127.0.0.1:8000/openapi.json)",
+      "Bash(tasklist //FI \"PID eq 17920\")",
+      "Bash(taskkill //F //PID 17920)",
+      "Bash(nohup uvicorn backend.app.main:app --port 8000)",
+      "Bash(curl -s -m 3 http://127.0.0.1:8000/api/health)",
+      "Bash(nohup uvicorn backend.app.main:app --port 8010)",
+      "Bash(curl -s http://127.0.0.1:8010/api/health)",
+      "Bash(curl -s -X POST http://127.0.0.1:8010/api/datasets/upload -F 'file=@C:\\\\Users\\\\ANKUR~1.YAD\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\test_upload.csv;filename=test_plant_unit.csv' -F 'dataset_name=Ethylene Test Run 1' -F 'plant=Ethylene Plant - Complex 1' -F 'unit=Furnace / Pyrolysis')",
+      "Bash(curl -s http://127.0.0.1:8010/api/datasets)",
+      "Bash(npx tsc *)",
+      "Bash(curl -s -o /dev/null -w \"backend:%{http_code}\\\\n\" http://localhost:8010/api/health)",
+      "Bash(curl -s -o /dev/null -w \"frontend:%{http_code}\\\\n\" http://localhost:5173/)",
+      "Bash(curl *)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); row=[r for r in d['datasets'] if r['name']=='E2E_Verify_Boiler_Feed']; print\\(json.dumps\\(row, indent=2\\)\\)\")",
+      "Bash(npm run *)"
     ]
   }
 }

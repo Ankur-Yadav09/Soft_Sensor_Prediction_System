@@ -6,12 +6,13 @@ import { Callout } from '../../components/Callout'
 import { LineChart } from '../../components/LineChart'
 import { StepHeading } from '../../components/StepHeading'
 import { useJobPolling } from '../../hooks/useJobPolling'
+import { useActiveProject } from '../../state/ActiveProjectContext'
 import { ALGO_DEFAULTS, ALGO_FIELDS, ALGORITHMS, toApiHyperparameters } from './algorithmFields'
 import type { TrainingResult } from '../../api/types'
 
 export function TrainPage() {
   const queryClient = useQueryClient()
-  const [projectId, setProjectId] = useState('')
+  const { activeProject: projectId, setActiveProject: setProjectId } = useActiveProject()
   const [algorithm, setAlgorithm] = useState<string>('DAE')
   const [values, setValues] = useState<Record<string, unknown>>(ALGO_DEFAULTS.DAE)
   const [jobId, setJobId] = useState<string | null>(null)
@@ -63,8 +64,8 @@ export function TrainPage() {
         </select>
         {selectedProject && (
           <p className="caption" style={{ marginTop: '0.5rem' }}>
-            X: {selectedProject.x_cols.join(', ')} · Y: {selectedProject.y_cols.join(', ')} · Train/Test:{' '}
-            {selectedProject.n_train}/{selectedProject.n_test}
+            Carried over from Feature Selection. X: {selectedProject.x_cols.join(', ')} · Y:{' '}
+            {selectedProject.y_cols.join(', ')} · Train/Test: {selectedProject.n_train}/{selectedProject.n_test}
           </p>
         )}
         {projectsQuery.data?.length === 0 && (
