@@ -1,0 +1,286 @@
+/* Matches the REAL rendered Streamlit app (verified via live screenshots +
+   computed styles), not just config/settings.py's THEME_CSS source — that
+   CSS's `.main` dark-background rule turned out not to match Streamlit's
+   current DOM, so the live app actually renders a light main content area
+   with dark text and only the sidebar in dark navy. Sidebar gradient values
+   below are exact matches (rgb(15,42,82)/rgb(22,54,96), confirmed via
+   getComputedStyle against the live app). */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Outfit:wght@400;600;800&display=swap');
+
+:root {
+  --primary: #2563eb;
+  --primary-light: #4da6ff;
+  --secondary: #2b6cb0;
+  --accent: #10b981;
+  --sidebar-top: #0f2a52;
+  --sidebar-mid: #163660;
+  --bg-page: #ffffff;
+  --bg-subtle: #f8fafc;
+  --text-main: #31333f;
+  --text-caption: #6b7280;
+  --border: #e5e7eb;
+  --control-bg: #f0f2f6;
+  --banner-from: #334155;
+  --banner-to: #1e293b;
+  --banner-heading: #7dd3fc;
+  --banner-subtitle: #cbd5e1;
+  --info-bg: #eaf3fd;
+  --info-text: #1e4a7a;
+  --success-bg: #eafaf1;
+  --success-text: #0f5f42;
+  --warning-bg: #fef8e6;
+  --warning-text: #8a5a10;
+  --error-bg: #fdecec;
+  --error-text: #9c2626;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-page);
+  color: var(--text-main);
+  font-family: 'Inter', sans-serif;
+  min-height: 100vh;
+}
+
+h1, h2, h3, h4 {
+  font-family: 'Outfit', sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0;
+  color: var(--text-main);
+}
+
+button {
+  background: linear-gradient(90deg, #3b82f6 0%, #2563eb 100%);
+  color: white;
+  border: none;
+  padding: 0.6rem 1.5rem;
+  border-radius: 10px;
+  font-weight: 600;
+  font-family: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.25);
+  background: linear-gradient(90deg, #2563eb 0%, #1d4ed8 100%);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* A plain "toggle chip" look for buttons used as selection pills (feature
+   toggles, algorithm picker, source picker) rather than the primary CTA
+   gradient — pages apply this class when a button represents a selectable
+   option instead of an action. */
+button.chip {
+  background: var(--control-bg);
+  color: var(--text-main);
+  box-shadow: none;
+  font-weight: 500;
+}
+button.chip:hover {
+  background: #e2e8f0;
+  transform: none;
+  box-shadow: none;
+}
+button.chip.active {
+  background: linear-gradient(90deg, #3b82f6 0%, #2563eb 100%);
+  color: white;
+}
+button.chip.active.accent {
+  background: linear-gradient(90deg, #10b981 0%, #059669 100%);
+}
+
+.card {
+  background: var(--bg-page);
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+/* Small key-value tables embedded in reasoning text (per-feature score
+   breakdown) read better auto-width than stretched to the full card. */
+.reasoning table {
+  width: auto;
+  margin: 0.5rem 0;
+}
+.reasoning td {
+  padding: 0.3rem 0.8rem;
+}
+
+table {
+  background: var(--bg-page);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.87rem;
+}
+
+th {
+  background: var(--bg-subtle);
+  color: var(--text-caption);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+.metric-value {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.status-card {
+  background: var(--bg-page);
+  padding: 1.5rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.caption {
+  color: var(--text-caption);
+  font-size: 0.87rem;
+}
+
+code {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  font-size: 0.87em;
+}
+
+/* Form controls — Streamlit's light-gray widget look */
+select,
+input[type='number'],
+input[type='text'] {
+  background: var(--control-bg);
+  color: var(--text-main);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+select:focus,
+input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+}
+
+label {
+  color: var(--text-main);
+  font-size: 0.9rem;
+}
+
+/* Numbered step badge, e.g. the "①  Load Dataset" headers on the real app's
+   wizard-style pages. */
+.step-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: white;
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+.step-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+.step-heading h2 {
+  font-size: 1.05rem;
+}
+
+/* Dark "hero" banner used to introduce a major section (e.g. "Target
+   Variable Selection", "Data Understanding") — a recurring pattern on the
+   real app distinct from the plain white page background. */
+.section-banner {
+  background: linear-gradient(135deg, var(--banner-from) 0%, var(--banner-to) 100%);
+  border-radius: 14px;
+  padding: 1.5rem 1.75rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.section-banner .icon {
+  font-size: 1.8rem;
+}
+.section-banner h2 {
+  color: var(--banner-heading);
+  font-size: 1.3rem;
+  margin-bottom: 0.2rem;
+}
+.section-banner p {
+  color: var(--banner-subtitle);
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+/* Pastel callouts matching st.info / st.success / st.warning / st.error */
+.callout {
+  border-radius: 10px;
+  padding: 0.85rem 1.1rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.callout.info {
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+.callout.success {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+.callout.warning {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+.callout.error {
+  background: var(--error-bg);
+  color: var(--error-text);
+}
