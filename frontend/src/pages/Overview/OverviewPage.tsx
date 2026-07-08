@@ -34,10 +34,8 @@ export function OverviewPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
       <div>
-        <h1>🏭 Industrial DAE — Multi X-Y Dashboard</h1>
-        <p className="caption">
-          End-to-end Denoising Autoencoder for Sensor Reconstruction &amp; KPI Prediction
-        </p>
+        <h1>🏭 SoftSense AI — Industrial Intelligence</h1>
+        <p className="caption">Industrial AI Platform for Soft Sensor Development and Process Optimization</p>
       </div>
 
       <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>

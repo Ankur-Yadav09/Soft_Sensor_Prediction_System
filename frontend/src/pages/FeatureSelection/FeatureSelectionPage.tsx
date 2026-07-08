@@ -4,6 +4,7 @@ import { listDatasets } from '../../api/datasets'
 import { submitFeatureSelection } from '../../api/featureSelection'
 import { getFeatureStats } from '../../api/preprocess'
 import { Callout } from '../../components/Callout'
+import { MultiSelectDropdown } from '../../components/MultiSelectDropdown'
 import { SectionBanner } from '../../components/SectionBanner'
 import { StepHeading } from '../../components/StepHeading'
 import { Tabs } from '../../components/Tabs'
@@ -140,19 +141,17 @@ export function FeatureSelectionPage() {
 
         {datasetName && (
           <div style={{ marginTop: '1rem' }}>
-            <div className="caption">Target KPI column(s)</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginTop: '0.5rem' }}>
-              {numericCols.map((f) => (
-                <button
-                  key={f}
-                  className={`chip accent${yCols.has(f) ? ' active' : ''}`}
-                  onClick={() => toggleY(f)}
-                  style={{ padding: '0.3rem 0.7rem', fontSize: '0.8rem' }}
-                >
-                  {f}
-                </button>
-              ))}
+            <div className="caption" style={{ marginBottom: '0.4rem' }}>
+              Target Variable(s)
             </div>
+            <MultiSelectDropdown
+              options={numericCols}
+              selected={yCols}
+              onChange={(next) => {
+                setYCols(next)
+                setJobId(null)
+              }}
+            />
           </div>
         )}
 
