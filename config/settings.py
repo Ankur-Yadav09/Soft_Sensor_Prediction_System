@@ -129,9 +129,6 @@ NAVIGATION_OPTIONS: list = [
     "Feature Selection",
     "Train Model",
     "Predict",
-    "What-If",
-    "History",
-    "Comparison",
 ]
 NAVIGATION_ICONS: list = [
     "graph-up",

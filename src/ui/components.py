@@ -281,8 +281,5 @@ def render_workflow_guide() -> None:
         | 2 | **Preprocess** | Select X/Y features, impute missing data, handle outliers |
         | 3 | **Train Model** | Configure hyperparameters, train DAE, or load a saved model |
         | 4 | **Predict** | Evaluate on test data — metrics, scatter plots, residual analysis |
-        | 5 | **What-If** | Sensitivity analysis with step changes & trend detection |
-        | 6 | **History** | Review all training runs |
-        | 7 | **Comparison** | Compare metrics across different model runs |
         """
     )

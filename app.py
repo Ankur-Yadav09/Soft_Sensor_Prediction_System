@@ -39,15 +39,12 @@ selected = render_sidebar()
 
 # ---- Page dispatch ----
 from src.ui.pages import (  # noqa: E402  (imports after configure_page is intentional)
-    comparison,
     feature_selection,
-    history,
     overview,
     predict,
     preprocess,
     train,
     upload,
-    what_if,
 )
 
 _PAGE_MAP = {
@@ -56,10 +53,7 @@ _PAGE_MAP = {
     "Preprocessing":     preprocess.render,
     "Feature Selection": feature_selection.render,
     "Train Model":       train.render,
-    "Predict":           predict.render,
-    "What-If":           what_if.render,
-    "History":           history.render,
-    "Comparison":        comparison.render,
+    "Predict":           predict.render
 }
 
 _PAGE_MAP[selected]()
