@@ -5,6 +5,7 @@ import { submitTraining } from '../../api/training'
 import { Callout } from '../../components/Callout'
 import { LineChart } from '../../components/LineChart'
 import { StepHeading } from '../../components/StepHeading'
+import { WorkflowStepper } from '../../components/WorkflowStepper'
 import { useJobPolling } from '../../hooks/useJobPolling'
 import { useActiveProject } from '../../state/ActiveProjectContext'
 import { ALGO_DEFAULTS, ALGO_FIELDS, ALGORITHMS, toApiHyperparameters } from './algorithmFields'
@@ -51,6 +52,8 @@ export function TrainPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
       <h1>Train Model</h1>
+
+      <WorkflowStepper current="build" />
 
       <div className="card" style={{ padding: '1.5rem' }}>
         <StepHeading step={1} title="Choose a Project" />

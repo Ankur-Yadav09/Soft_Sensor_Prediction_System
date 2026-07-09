@@ -151,6 +151,21 @@ tr:last-child td {
   border-bottom: none;
 }
 
+/* Applied when a table is capped to N visible rows (DataTable's
+   maxVisibleRows, and the hand-rolled dataset preview tables) so the header
+   stays put while the body scrolls underneath it. */
+.data-table-scroll thead th,
+.scroll-rows-5 thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.scroll-rows-5 {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
 .metric-value {
   font-size: 1.8rem;
   font-weight: 700;

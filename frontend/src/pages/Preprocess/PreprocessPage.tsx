@@ -5,6 +5,7 @@ import { getFeatureStats } from '../../api/preprocess'
 import { Callout } from '../../components/Callout'
 import { StepHeading } from '../../components/StepHeading'
 import { Tabs } from '../../components/Tabs'
+import { WorkflowStepper } from '../../components/WorkflowStepper'
 import { useActiveDataset } from '../../state/ActiveDatasetContext'
 import { AutomatedPreprocessingTab } from './AutomatedPreprocessingTab'
 import { BasicPreprocessingTab } from './BasicPreprocessingTab'
@@ -40,6 +41,8 @@ export function PreprocessPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
       <h1>Data Preprocessing</h1>
+
+      <WorkflowStepper current="health" />
 
       <div>
         <StepHeading step={1} title="Load Dataset" />
@@ -121,7 +124,7 @@ export function PreprocessPage() {
                   <Stat label="Columns" value={String(previewQuery.data.shape[1])} />
                   <Stat label="Numeric Columns" value={String(numericCols.length)} />
                 </div>
-                <div style={{ overflowX: 'auto' }}>
+                <div className="scroll-rows-5" style={{ overflowX: 'auto' }}>
                   <table>
                     <thead>
                       <tr>

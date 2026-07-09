@@ -5,11 +5,11 @@
 // used in the sidebar reference the user shared earlier, deliberately kept
 // as a standalone reusable component so later pages can adopt it too.
 const PHASES = [
-  { key: 'connect', label: 'Connect Data', icon: '🔌' },
-  { key: 'health', label: 'Data Health', icon: '❤️' },
-  { key: 'discovery', label: 'AI Feature Discovery', icon: '🔍' },
-  { key: 'build', label: 'Build Soft Sensor', icon: '🧠' },
-  { key: 'predict', label: 'Live Prediction', icon: '📡' },
+  { key: 'connect', label: 'Connect Data', subtitle: 'Select dataset', icon: '🔌' },
+  { key: 'health', label: 'Data Health', subtitle: 'Quality check', icon: '❤️' },
+  { key: 'discovery', label: 'AI Feature Discovery', subtitle: 'Variable selection', icon: '🔍' },
+  { key: 'build', label: 'Build Soft Sensor', subtitle: 'Train model', icon: '🧠' },
+  { key: 'predict', label: 'Live Prediction', subtitle: 'Go live', icon: '📡' },
 ] as const
 
 export type WorkflowPhaseKey = (typeof PHASES)[number]['key']
@@ -49,7 +49,7 @@ export function WorkflowStepper({ current }: WorkflowStepperProps) {
                     border: isCurrent ? 'none' : '1px solid var(--border)',
                   }}
                 >
-                  {isPast ? '✓' : phase.icon}
+                  {isPast ? '✓' : isCurrent ? phase.icon : i + 1}
                 </div>
                 <span
                   style={{
@@ -60,6 +60,15 @@ export function WorkflowStepper({ current }: WorkflowStepperProps) {
                   }}
                 >
                   {phase.label}
+                </span>
+                <span
+                  style={{
+                    fontSize: '0.7rem',
+                    textAlign: 'center',
+                    color: 'var(--text-caption)',
+                  }}
+                >
+                  {phase.subtitle}
                 </span>
               </div>
               {i < PHASES.length - 1 && (

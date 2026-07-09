@@ -8,6 +8,7 @@ import { MultiSelectDropdown } from '../../components/MultiSelectDropdown'
 import { SectionBanner } from '../../components/SectionBanner'
 import { StepHeading } from '../../components/StepHeading'
 import { Tabs } from '../../components/Tabs'
+import { WorkflowStepper } from '../../components/WorkflowStepper'
 import { useJobPolling } from '../../hooks/useJobPolling'
 import { useActiveDataset } from '../../state/ActiveDatasetContext'
 import { FeatureSelectionResults } from './FeatureSelectionResults'
@@ -109,6 +110,8 @@ export function FeatureSelectionPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
       <h1>Feature Selection</h1>
+
+      <WorkflowStepper current="discovery" />
 
       <div>
         <StepHeading step={1} title="Select Target (Y) Variable" />

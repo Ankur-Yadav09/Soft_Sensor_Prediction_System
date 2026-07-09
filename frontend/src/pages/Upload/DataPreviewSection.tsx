@@ -27,7 +27,7 @@ export function DataPreviewSection({ datasetName }: DataPreviewSectionProps) {
       {previewQuery.isError && <p className="caption">Could not load preview for {datasetName}.</p>}
 
       {previewQuery.data && (
-        <div style={{ overflowX: 'auto' }}>
+        <div className="scroll-rows-5" style={{ overflowX: 'auto' }}>
           <table>
             <thead>
               <tr>

@@ -40,7 +40,14 @@
       "Bash(curl -s -o /dev/null -w \"frontend:%{http_code}\\\\n\" http://localhost:5173/)",
       "Bash(curl *)",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); row=[r for r in d['datasets'] if r['name']=='E2E_Verify_Boiler_Feed']; print\\(json.dumps\\(row, indent=2\\)\\)\")",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(command -v chromium-cli)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(npx --yes playwright@latest --version)",
+      "Bash(npx --yes playwright@1.61.1 install chromium)",
+      "Read(//c/Users/ankur.yadav/AppData/Local/ms-playwright/**)",
+      "Bash(taskkill *)"
     ]
   }
 }

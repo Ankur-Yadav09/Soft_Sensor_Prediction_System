@@ -50,65 +50,64 @@ export function UseExistingDatasetTab({ selectedName, onSelect }: UseExistingDat
         style={{ maxWidth: 420 }}
       />
 
-      <div style={{ overflowX: 'auto' }}>
-        <DataTable<DatasetSummary>
-          keyFn={(d) => d.name}
-          emptyMessage={
-            datasetsQuery.isLoading
-              ? 'Loading datasets…'
-              : 'No datasets found. Switch to "Upload New Dataset" to connect your first data source.'
-          }
-          rows={filtered}
-          columns={[
-            {
-              header: 'Dataset Name',
-              render: (d) => (
-                <span style={{ fontWeight: d.name === selectedName ? 700 : 400, color: d.name === selectedName ? 'var(--primary)' : undefined }}>
-                  {d.name}
-                </span>
-              ),
-            },
-            { header: 'Plant', render: (d) => d.plant ?? '—' },
-            { header: 'System/Unit', render: (d) => d.unit ?? '—' },
-            { header: 'Upload Date', render: (d) => d.uploaded_at },
-            { header: 'Records', render: (d) => d.rows.toLocaleString() },
-            { header: 'Features', render: (d) => d.cols },
-            {
-              header: 'Status',
-              render: (d) => (
-                <span style={{ color: STATUS_COLOR[d.status ?? 'Ready'] ?? 'var(--text-main)', fontWeight: 600 }}>
-                  ● {d.status ?? 'Ready'}
-                </span>
-              ),
-            },
-            {
-              header: 'Actions',
-              render: (d) => (
-                <div style={{ display: 'flex', gap: '0.4rem' }}>
-                  <button style={{ padding: '0.3rem 0.7rem', fontSize: '0.78rem' }} onClick={() => onSelect(d.name)}>
-                    Use
-                  </button>
-                  <button
-                    className="chip"
-                    style={{ padding: '0.3rem 0.7rem', fontSize: '0.78rem' }}
-                    onClick={() => onSelect(d.name)}
-                  >
-                    View Details
-                  </button>
-                  <button
-                    className="chip"
-                    style={{ padding: '0.3rem 0.7rem', fontSize: '0.78rem', color: 'var(--error-text)' }}
-                    disabled={deleteMutation.isPending}
-                    onClick={() => deleteMutation.mutate(d.name)}
-                  >
-                    🗑️
-                  </button>
-                </div>
-              ),
-            },
-          ]}
-        />
-      </div>
+      <DataTable<DatasetSummary>
+        keyFn={(d) => d.name}
+        maxVisibleRows={5}
+        emptyMessage={
+          datasetsQuery.isLoading
+            ? 'Loading datasets…'
+            : 'No datasets found. Switch to "Upload New Dataset" to connect your first data source.'
+        }
+        rows={filtered}
+        columns={[
+          {
+            header: 'Dataset Name',
+            render: (d) => (
+              <span style={{ fontWeight: d.name === selectedName ? 700 : 400, color: d.name === selectedName ? 'var(--primary)' : undefined }}>
+                {d.name}
+              </span>
+            ),
+          },
+          { header: 'Plant', render: (d) => d.plant ?? '—' },
+          { header: 'System/Unit', render: (d) => d.unit ?? '—' },
+          { header: 'Upload Date', render: (d) => d.uploaded_at },
+          { header: 'Records', render: (d) => d.rows.toLocaleString() },
+          { header: 'Features', render: (d) => d.cols },
+          {
+            header: 'Status',
+            render: (d) => (
+              <span style={{ color: STATUS_COLOR[d.status ?? 'Ready'] ?? 'var(--text-main)', fontWeight: 600 }}>
+                ● {d.status ?? 'Ready'}
+              </span>
+            ),
+          },
+          {
+            header: 'Actions',
+            render: (d) => (
+              <div style={{ display: 'flex', gap: '0.4rem' }}>
+                <button style={{ padding: '0.3rem 0.7rem', fontSize: '0.78rem' }} onClick={() => onSelect(d.name)}>
+                  Use
+                </button>
+                <button
+                  className="chip"
+                  style={{ padding: '0.3rem 0.7rem', fontSize: '0.78rem' }}
+                  onClick={() => onSelect(d.name)}
+                >
+                  View Details
+                </button>
+                <button
+                  className="chip"
+                  style={{ padding: '0.3rem 0.7rem', fontSize: '0.78rem', color: 'var(--error-text)' }}
+                  disabled={deleteMutation.isPending}
+                  onClick={() => deleteMutation.mutate(d.name)}
+                >
+                  🗑️
+                </button>
+              </div>
+            ),
+          },
+        ]}
+      />
     </div>
   )
 }

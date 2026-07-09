@@ -133,6 +133,7 @@ export function OverviewPage() {
           <h2 style={{ fontSize: '1.15rem', marginBottom: '0.75rem' }}>📦 Datasets in Database</h2>
           <DataTable
             keyFn={(d) => d.name}
+            maxVisibleRows={5}
             emptyMessage="No datasets stored yet."
             rows={datasets}
             columns={[
