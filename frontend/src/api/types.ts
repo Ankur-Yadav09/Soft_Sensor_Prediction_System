@@ -108,6 +108,8 @@ export interface MethodResultOut {
   notes: string
   success: boolean
   raw_scores: Record<string, number>
+  all_scores: Record<string, number>
+  per_target_scores: Record<string, Record<string, number>>
 }
 
 export interface FeatureSelectionResult {

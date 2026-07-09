@@ -49,6 +49,11 @@ def _method_results_out(results: List[MethodResult]) -> List[dict]:
             # ranks features by, per method — mirrors _plot_ranking_matrix's
             # rank_maps construction in src/ui/pages/feature_selection.py.
             "raw_scores": r.raw_scores,
+            # all_scores (normalised 0-1) and per_target_scores back the
+            # Method Details table's "Norm Score" and "{Y} Raw" columns —
+            # mirrors the st.dataframe built in feature_selection.py's tab5.
+            "all_scores": r.all_scores,
+            "per_target_scores": r.per_target_scores,
         }
         for r in results
     ]

@@ -205,33 +205,95 @@ function RecommendationsTab({ result }: { result: FeatureSelectionResult }) {
   )
 }
 
+type MethodDetailRow = Record<string, string | number>
+
 function MethodDetailsTab({ result }: { result: FeatureSelectionResult }) {
   const [openMethod, setOpenMethod] = useState<string | null>(null)
+  const corrByFeature = new Map(result.corr_with_target.map((rec) => [String(rec.Feature), rec]))
+  const corrYCols = Object.keys(result.corr_with_target[0] ?? {}).filter((k) => k !== 'Feature')
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-      <p className="caption">Per-method feature rankings — which features each independent method selected.</p>
-      {result.method_results.map((m) => (
-        <div key={m.method_id} className="card" style={{ padding: '0.9rem 1.1rem' }}>
-          <button
-            onClick={() => setOpenMethod(openMethod === m.method_id ? null : m.method_id)}
-            style={{ background: 'transparent', boxShadow: 'none', padding: 0, width: '100%', textAlign: 'left', color: 'var(--text-main)', fontWeight: 700 }}
-          >
-            {openMethod === m.method_id ? '▾' : '▸'} {m.success ? '✅' : '❌'} {m.name} — {m.category} —{' '}
-            {m.selected_features.length} features {m.notes && `(${m.notes})`}
-          </button>
-          {openMethod === m.method_id && (
-            <div style={{ marginTop: '0.6rem' }}>
-              {m.success ? (
-                <p className="caption">
-                  Selected: <code>{m.selected_features.join(', ') || 'none'}</code>
-                </p>
-              ) : (
-                <Callout variant="error">{m.notes}</Callout>
-              )}
-            </div>
-          )}
-        </div>
-      ))}
+      <p className="caption">
+        Methods that train per Y target show individual raw scores alongside the averaged raw score and
+        normalized score. Methods that reduce to a single averaged Y show only Avg Raw and Norm Score.
+      </p>
+      {result.method_results.map((m) => {
+        const isCorr = m.method_id === 'target_correlation' && corrYCols.length > 0
+        const sampleFeat = m.selected_features[0]
+        const yColNames = sampleFeat ? Object.keys(m.per_target_scores[sampleFeat] ?? {}) : []
+        const hasPerY = !isCorr && yColNames.length > 0
+
+        const rows: MethodDetailRow[] = m.selected_features.map((feat, i) => {
+          const row: MethodDetailRow = { Rank: i + 1, Feature: feat }
+          if (isCorr) {
+            const rec = corrByFeature.get(feat)
+            for (const yc of corrYCols) {
+              const val = rec ? Number(rec[yc]) : NaN
+              row[yc] = Number.isFinite(val) ? val.toFixed(4) : '—'
+            }
+            row['Avg |r|'] = m.raw_scores[feat]?.toFixed(5) ?? '—'
+          } else {
+            if (hasPerY) {
+              for (const yc of yColNames) {
+                row[`${yc} Raw`] = m.per_target_scores[feat]?.[yc]?.toFixed(5) ?? '—'
+              }
+            }
+            row['Avg Raw'] = m.raw_scores[feat]?.toFixed(5) ?? '—'
+          }
+          row['Norm Score'] = m.all_scores[feat]?.toFixed(4) ?? '—'
+          return row
+        })
+
+        const scoreCols = isCorr
+          ? [...corrYCols.map((yc) => ({ header: yc, render: (r: MethodDetailRow) => r[yc] })), { header: 'Avg |r|', render: (r: MethodDetailRow) => r['Avg |r|'] }]
+          : [
+              ...(hasPerY ? yColNames.map((yc) => ({ header: `${yc} Raw`, render: (r: MethodDetailRow) => r[`${yc} Raw`] })) : []),
+              { header: 'Avg Raw', render: (r: MethodDetailRow) => r['Avg Raw'] },
+            ]
+
+        return (
+          <div key={m.method_id} className="card" style={{ padding: '0.9rem 1.1rem' }}>
+            <button
+              onClick={() => setOpenMethod(openMethod === m.method_id ? null : m.method_id)}
+              style={{ background: 'transparent', boxShadow: 'none', padding: 0, width: '100%', textAlign: 'left', color: 'var(--text-main)', fontWeight: 700 }}
+            >
+              {openMethod === m.method_id ? '▾' : '▸'} {m.success ? '✅' : '❌'} {m.name} — {m.category} —{' '}
+              {m.selected_features.length} features {m.notes && `(${m.notes})`}
+            </button>
+            {openMethod === m.method_id && (
+              <div style={{ marginTop: '0.6rem' }}>
+                {!m.success ? (
+                  <Callout variant="error">{m.notes}</Callout>
+                ) : rows.length === 0 ? (
+                  <p className="caption">No features selected by this method.</p>
+                ) : (
+                  <>
+                    <DataTable<MethodDetailRow>
+                      keyFn={(r) => String(r.Feature)}
+                      maxVisibleRows={8}
+                      rows={rows}
+                      columns={[
+                        { header: 'Rank', render: (r) => r.Rank },
+                        { header: 'Feature', render: (r) => <code>{r.Feature}</code> },
+                        ...scoreCols,
+                        { header: 'Norm Score', render: (r) => r['Norm Score'] },
+                      ]}
+                    />
+                    <p className="caption" style={{ marginTop: '0.5rem' }}>
+                      {isCorr
+                        ? 'Y columns show signed Pearson r (+/– indicates direction). Avg |r| = mean absolute correlation across targets (used in scoring). Norm Score = normalised 0–1 (used in Final Score).'
+                        : hasPerY
+                          ? `Each Y column shows the raw score for that target run. Avg Raw = mean raw score across ${yColNames.length} target(s). Norm Score = normalised 0–1 (used in Final Score).`
+                          : 'Avg Raw = raw score used to rank features for this method. Norm Score = normalised 0–1 (used in Final Score).'}
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

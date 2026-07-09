@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { listProjects } from '../../api/preprocess'
 import { submitTraining } from '../../api/training'
 import { Callout } from '../../components/Callout'
@@ -12,6 +13,7 @@ import { ALGO_DEFAULTS, ALGO_FIELDS, ALGORITHMS, toApiHyperparameters } from './
 import type { TrainingResult } from '../../api/types'
 
 export function TrainPage() {
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { activeProject: projectId, setActiveProject: setProjectId } = useActiveProject()
   const [algorithm, setAlgorithm] = useState<string>('DAE')
@@ -215,6 +217,10 @@ export function TrainPage() {
               />
             </div>
           )}
+
+          <button style={{ marginTop: '1.25rem' }} onClick={() => navigate('/predict')}>
+            Continue to Predict →
+          </button>
         </div>
       )}
     </div>

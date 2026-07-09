@@ -22,7 +22,7 @@ type Pathway = 'configure' | 'automated'
 export function FeatureSelectionPage() {
   const { activeDataset: datasetName, setActiveDataset: setDatasetName } = useActiveDataset()
   const [yCols, setYCols] = useState<Set<string>>(new Set())
-  const [pathway, setPathway] = useState<Pathway>('configure')
+  const [pathway, setPathway] = useState<Pathway>('automated')
 
   // Configure-pathway settings
   const [topK, setTopK] = useState(10)
@@ -180,18 +180,34 @@ export function FeatureSelectionPage() {
           <div>
             <h2 style={{ fontSize: '1.05rem', marginBottom: '0.75rem' }}>Choose Feature Selection Mode</h2>
             <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <button className={`chip${pathway === 'configure' ? ' active' : ''}`} onClick={() => setPathway('configure')}>
-                🔧 Configure Feature Selection
-              </button>
               <button className={`chip${pathway === 'automated' ? ' active' : ''}`} onClick={() => setPathway('automated')}>
                 ⚡ Automated Feature Selection
+              </button>
+              <button className={`chip${pathway === 'configure' ? ' active' : ''}`} onClick={() => setPathway('configure')}>
+                🔧 Configure Feature Selection
               </button>
             </div>
           </div>
 
-          {pathway === 'configure' ? (
+          {pathway === 'automated' ? (
             <div className="card" style={{ padding: '1.5rem' }}>
-              <StepHeading step={2} title="Configure Feature Selection" />
+              <StepHeading step={2} title="Automated Feature Selection" />
+              <SectionBanner
+                icon="⚡"
+                title="Automated Feature Selection"
+                subtitle="Runs all available methods with best-default parameters in one click."
+              />
+              <p className="caption" style={{ margin: '1rem 0' }}>
+                Will run {METHOD_IDS.length} independent scoring method(s) · Top-K auto-scaled to feature count ·
+                Collinearity threshold = 0.85 · VIF threshold = 10.0
+              </p>
+              <button disabled={submitMutation.isPending} onClick={runAutomated}>
+                {submitMutation.isPending ? 'Running…' : '⚡ Run Automated Feature Selection'}
+              </button>
+            </div>
+          ) : (
+            <div className="card" style={{ padding: '1.5rem' }}>
+              <StepHeading step={3} title="Configure Feature Selection" />
               <Tabs
                 tabs={[
                   {
@@ -271,22 +287,6 @@ export function FeatureSelectionPage() {
                 onClick={runConfigure}
               >
                 {submitMutation.isPending ? 'Running…' : '🔍 Run Intelligent Feature Selection'}
-              </button>
-            </div>
-          ) : (
-            <div className="card" style={{ padding: '1.5rem' }}>
-              <StepHeading step={3} title="Automated Feature Selection" />
-              <SectionBanner
-                icon="⚡"
-                title="Automated Feature Selection"
-                subtitle="Runs all available methods with best-default parameters in one click."
-              />
-              <p className="caption" style={{ margin: '1rem 0' }}>
-                Will run {METHOD_IDS.length} independent scoring method(s) · Top-K auto-scaled to feature count ·
-                Collinearity threshold = 0.85 · VIF threshold = 10.0
-              </p>
-              <button disabled={submitMutation.isPending} onClick={runAutomated}>
-                {submitMutation.isPending ? 'Running…' : '⚡ Run Automated Feature Selection'}
               </button>
             </div>
           )}

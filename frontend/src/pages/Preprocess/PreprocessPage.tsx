@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { getDatasetPreview, listDatasets } from '../../api/datasets'
 import { getFeatureStats } from '../../api/preprocess'
 import { Callout } from '../../components/Callout'
@@ -13,6 +14,7 @@ import { DataUnderstandingTab } from './DataUnderstandingTab'
 import type { CleaningResponse } from '../../api/preprocess'
 
 export function PreprocessPage() {
+  const navigate = useNavigate()
   const { activeDataset: datasetName, setActiveDataset: setDatasetName } = useActiveDataset()
   const [lastCleaned, setLastCleaned] = useState<CleaningResponse | null>(null)
 
@@ -95,6 +97,10 @@ export function PreprocessPage() {
                   content: <DataUnderstandingTab datasetName={datasetName} numericCols={numericCols} />,
                 },
                 {
+                  label: '🤖 Automated Preprocessing',
+                  content: <AutomatedPreprocessingTab datasetName={datasetName} onCleaned={onCleaned} />,
+                },
+                {
                   label: '⚙️ Basic Preprocessing',
                   content: (
                     <BasicPreprocessingTab
@@ -104,10 +110,6 @@ export function PreprocessPage() {
                       onCleaned={onCleaned}
                     />
                   ),
-                },
-                {
-                  label: '🤖 Automated Preprocessing',
-                  content: <AutomatedPreprocessingTab datasetName={datasetName} onCleaned={onCleaned} />,
                 },
               ]}
             />
@@ -148,6 +150,9 @@ export function PreprocessPage() {
                   Proceed to the <strong>Feature Selection</strong> page to choose X/Y columns, run feature
                   selection, and finalize the train/test split.
                 </p>
+                <button style={{ marginTop: '0.75rem' }} onClick={() => navigate('/feature-selection')}>
+                  Continue to Feature Selection →
+                </button>
               </>
             )}
           </div>
